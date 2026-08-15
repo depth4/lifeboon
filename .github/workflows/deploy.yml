@@ -39,11 +39,12 @@ jobs:
       - name: Build
         run: npm run build
 
-      # `enablement` turns Pages on via the API if it is not already enabled,
-      # which saves a trip to the repository settings on the first run.
+      # Pages must be switched on once by hand, under
+      # Settings -> Pages -> Build and deployment -> Source: GitHub Actions.
+      # The `enablement: true` option cannot do it for us: the workflow token
+      # is not allowed to create a Pages site, only to deploy to an existing
+      # one. Until it is enabled, this step fails with "Get Pages site failed".
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
