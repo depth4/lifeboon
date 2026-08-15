@@ -1,0 +1,21 @@
+{
+  "name": "lifeboon",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser life simulator built on real-world OpenStreetMap data: 3D city, real streets, simulated inhabitants.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}

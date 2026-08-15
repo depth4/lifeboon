@@ -1,0 +1,343 @@
+/**
+ * The interface layer: everything that is DOM rather than WebGL.
+ *
+ * Kept deliberately free of simulation logic — the HUD is handed values and
+ * raises callbacks, so the render loop never has to know how a panel is built.
+ */
+
+import type { Agent, Population } from '../sim/population';
+import type { Building, Poi, World } from '../world/types';
+import { POI_LABEL } from '../data/tags';
+
+const $ = <T extends HTMLElement>(id: string): T => {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`Missing element #${id}`);
+  return el as T;
+};
+
+export interface HudCallbacks {
+  onSpeedChange(scale: number): void;
+  onModeChange(mode: 'orbit' | 'walk' | 'follow'): void;
+  onSearch(query: string, radius: number): void;
+  onPickResult(lat: number, lon: number, name: string, radius: number): void;
+  onFollow(): void;
+  onDeselect(): void;
+}
+
+const BUILDING_LABEL: Record<Building['kind'], string> = {
+  residential: 'Homes',
+  commercial: 'Commercial',
+  office: 'Offices',
+  retail: 'Retail',
+  industrial: 'Industrial',
+  civic: 'Civic building',
+  education: 'Education',
+  religious: 'Place of worship',
+  other: 'Outbuilding',
+};
+
+const NEED_COLORS: Record<string, string> = {
+  Energy: '#6fb2ff',
+  Food: '#ffb454',
+  Social: '#9d8cff',
+  Fun: '#5fd39a',
+};
+
+export class Hud {
+  private readonly loader = $('loader');
+  private readonly loaderFill = $('loader-fill');
+  private readonly loaderStatus = $('loader-status');
+  private readonly loaderError = $('loader-error');
+
+  private readonly placeName = $('place-name');
+  private readonly sourceBadge = $('source-badge');
+  private readonly attribText = $('attrib-text');
+  private readonly aboutAttrib = $('about-attrib');
+
+  private readonly clockTime = $('clock-time');
+  private readonly clockDay = $('clock-day');
+
+  private readonly statAltitude = $('stat-altitude');
+  private readonly statOutdoors = $('stat-outdoors');
+  private readonly statPopulation = $('stat-population');
+  private readonly statBuildings = $('stat-buildings');
+  private readonly statRoads = $('stat-roads');
+  private readonly statFps = $('stat-fps');
+
+  private readonly inspector = $('inspector');
+  private readonly inspectorBody = $('inspector-body');
+  private readonly followBtn = $<HTMLButtonElement>('follow-btn');
+
+  private readonly searchForm = $<HTMLFormElement>('search-form');
+  private readonly searchInput = $<HTMLInputElement>('search-input');
+  private readonly searchBtn = $<HTMLButtonElement>('search-btn');
+  private readonly radiusSelect = $<HTMLSelectElement>('radius-select');
+  private readonly searchResults = $('search-results');
+
+  private lastStatsUpdate = 0;
+
+  constructor(private readonly cb: HudCallbacks) {
+    this.bindSpeeds();
+    this.bindModes();
+    this.bindSearch();
+    this.bindInspector();
+    this.bindAbout();
+  }
+
+  /* ------------------------------------------------------------ loader */
+
+  setLoading(message: string, progress: number): void {
+    this.loaderStatus.textContent = message;
+    this.loaderFill.style.width = `${Math.round(progress * 100)}%`;
+  }
+
+  setLoadError(message: string): void {
+    this.loaderError.textContent = message;
+    this.loaderError.hidden = false;
+  }
+
+  hideLoader(): void {
+    this.loader.classList.add('is-hidden');
+    window.setTimeout(() => {
+      this.loader.hidden = true;
+    }, 600);
+  }
+
+  showLoader(): void {
+    this.loader.hidden = false;
+    this.loaderError.hidden = true;
+    // Force a reflow so the fade-in transition restarts.
+    void this.loader.offsetHeight;
+    this.loader.classList.remove('is-hidden');
+  }
+
+  /* ------------------------------------------------------------- world */
+
+  setWorld(world: World): void {
+    this.placeName.textContent = world.stats.placeName;
+    const synthetic = world.stats.source === 'synthetic';
+    this.sourceBadge.textContent = synthetic ? 'synthetic' : 'OpenStreetMap';
+    this.sourceBadge.classList.toggle('is-synthetic', synthetic);
+    this.attribText.textContent = world.stats.attribution;
+    this.aboutAttrib.textContent = synthetic
+      ? 'This view is a generated city, not a real place. Load somewhere by name to switch to real map data.'
+      : `Currently showing ${world.stats.placeName}, built from ${world.stats.buildings.toLocaleString()} OpenStreetMap building footprints and ${world.stats.roadLengthKm.toFixed(1)} km of mapped streets.`;
+
+    this.statBuildings.textContent = world.stats.buildings.toLocaleString();
+    this.statRoads.textContent = `${world.stats.roadLengthKm.toFixed(1)} km`;
+  }
+
+  setPopulationCount(count: number): void {
+    this.statPopulation.textContent = count.toLocaleString();
+  }
+
+  /* ------------------------------------------------------------- frame */
+
+  updateClock(time: string, day: string): void {
+    this.clockTime.textContent = time;
+    this.clockDay.textContent = day;
+  }
+
+  /** Throttled: rewriting six DOM nodes every frame is pure waste. */
+  updateStats(now: number, altitude: number, outdoors: number, fps: number): void {
+    if (now - this.lastStatsUpdate < 250) return;
+    this.lastStatsUpdate = now;
+    this.statAltitude.textContent =
+      altitude >= 1000 ? `${(altitude / 1000).toFixed(2)} km` : `${Math.round(altitude)} m`;
+    this.statOutdoors.textContent = outdoors.toLocaleString();
+    this.statFps.textContent = String(Math.round(fps));
+  }
+
+  /* --------------------------------------------------------- inspector */
+
+  showAgent(agent: Agent, population: Population, world: World): void {
+    const home = population.homeBuilding(agent);
+    const job = population.jobPoi(agent);
+    const homeAddress = describeBuilding(home);
+
+    this.inspectorBody.innerHTML = `
+      <h3 class="insp-title">${escapeHtml(agent.name)}</h3>
+      <p class="insp-sub">${escapeHtml(population.describe(agent))}</p>
+      ${row('Age', `${agent.age}`)}
+      ${row('Lives in', homeAddress)}
+      ${row('Works at', job ? POI_LABEL[job.kind] : 'Not employed')}
+      ${row('Walking pace', `${agent.walkSpeed.toFixed(2)} m/s`)}
+      <div class="needs">
+        ${need('Energy', agent.energy)}
+        ${need('Food', 1 - agent.hunger)}
+        ${need('Social', agent.social)}
+        ${need('Fun', agent.fun)}
+      </div>
+      <p class="insp-note">
+        An invented inhabitant. Their home is a real mapped building; who actually
+        lives there is not known to this simulation and is not modelled.
+      </p>
+    `;
+    this.inspector.hidden = false;
+    this.followBtn.disabled = false;
+    void world;
+  }
+
+  showBuilding(building: Building, pois: Poi[]): void {
+    const inside = pois.filter((p) => p.buildingId === building.id);
+    const categories = [...new Set(inside.map((p) => POI_LABEL[p.kind]))];
+
+    this.inspectorBody.innerHTML = `
+      <h3 class="insp-title">${BUILDING_LABEL[building.kind]}</h3>
+      <p class="insp-sub">${describeBuilding(building)}</p>
+      ${row('Height', `${building.height.toFixed(1)} m`)}
+      ${row('Storeys', String(building.levels))}
+      ${row('Footprint', `${Math.round(building.area).toLocaleString()} m²`)}
+      ${row('Capacity', building.capacity ? `~${building.capacity} people` : '—')}
+      ${categories.length ? row('Ground floor', categories.join(', ')) : ''}
+      <p class="insp-note">
+        Shape, height and use come from the map. Categories only — any shop or
+        business name in the source data is discarded on import, and the inside of
+        the building is neither drawn nor simulated.
+      </p>
+    `;
+    this.inspector.hidden = false;
+    this.followBtn.disabled = true;
+  }
+
+  hideInspector(): void {
+    this.inspector.hidden = true;
+    this.followBtn.disabled = true;
+  }
+
+  /* ------------------------------------------------------------ search */
+
+  setSearchBusy(busy: boolean): void {
+    this.searchBtn.disabled = busy;
+    this.searchBtn.textContent = busy ? '…' : 'Load';
+  }
+
+  showSearchResults(results: Array<{ name: string; lat: number; lon: number }>): void {
+    if (!results.length) {
+      this.searchResults.innerHTML =
+        '<div class="search-result" style="color:var(--muted)">Nothing found. Try adding a city or country.</div>';
+      this.searchResults.hidden = false;
+      return;
+    }
+    this.searchResults.innerHTML = '';
+    for (const r of results) {
+      const btn = document.createElement('button');
+      btn.className = 'search-result';
+      btn.type = 'button';
+      btn.textContent = r.name;
+      btn.addEventListener('click', () => {
+        this.searchResults.hidden = true;
+        this.searchInput.value = r.name.split(',')[0];
+        this.cb.onPickResult(r.lat, r.lon, r.name, this.radius);
+      });
+      this.searchResults.appendChild(btn);
+    }
+    this.searchResults.hidden = false;
+  }
+
+  hideSearchResults(): void {
+    this.searchResults.hidden = true;
+  }
+
+  get radius(): number {
+    return parseInt(this.radiusSelect.value, 10);
+  }
+
+  setMode(mode: string): void {
+    for (const chip of document.querySelectorAll<HTMLElement>('[data-mode]')) {
+      chip.classList.toggle('is-active', chip.dataset.mode === mode);
+    }
+  }
+
+  /* ------------------------------------------------------------- bind */
+
+  private bindSpeeds(): void {
+    for (const chip of document.querySelectorAll<HTMLElement>('[data-speed]')) {
+      chip.addEventListener('click', () => {
+        for (const other of document.querySelectorAll<HTMLElement>('[data-speed]')) {
+          other.classList.remove('is-active');
+        }
+        chip.classList.add('is-active');
+        this.cb.onSpeedChange(Number(chip.dataset.speed));
+      });
+    }
+  }
+
+  private bindModes(): void {
+    for (const chip of document.querySelectorAll<HTMLElement>('[data-mode]')) {
+      chip.addEventListener('click', () => {
+        const mode = chip.dataset.mode as 'orbit' | 'walk' | 'follow';
+        if (mode === 'follow') this.cb.onFollow();
+        else this.cb.onModeChange(mode);
+      });
+    }
+  }
+
+  private bindSearch(): void {
+    this.searchForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const query = this.searchInput.value.trim();
+      if (query) this.cb.onSearch(query, this.radius);
+    });
+    document.addEventListener('click', (e) => {
+      if (!this.searchResults.contains(e.target as Node) && e.target !== this.searchInput) {
+        this.searchResults.hidden = true;
+      }
+    });
+  }
+
+  private bindInspector(): void {
+    $('inspector-close').addEventListener('click', () => {
+      this.hideInspector();
+      this.cb.onDeselect();
+    });
+  }
+
+  private bindAbout(): void {
+    const modal = $('about-modal');
+    modal.hidden = true;
+    $('about-btn').addEventListener('click', () => {
+      modal.hidden = false;
+    });
+    $('about-close').addEventListener('click', () => {
+      modal.hidden = true;
+    });
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.hidden = true;
+    });
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') modal.hidden = true;
+    });
+  }
+}
+
+/* ------------------------------------------------------------- helpers */
+
+function row(label: string, value: string): string {
+  return `<div class="insp-row"><span>${escapeHtml(label)}</span><span>${escapeHtml(value)}</span></div>`;
+}
+
+function need(label: string, value: number): string {
+  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  const color = NEED_COLORS[label] ?? '#6fb2ff';
+  return `
+    <div class="need">
+      <span>${label}</span>
+      <div class="need-bar"><div class="need-fill" style="width:${pct}%;background:${color}"></div></div>
+    </div>`;
+}
+
+function describeBuilding(b: Building): string {
+  const storeys = b.levels === 1 ? 'single storey' : `${b.levels} storeys`;
+  return `${BUILDING_LABEL[b.kind]}, ${storeys}`;
+}
+
+/** The map is user-supplied data; never inject it into HTML unescaped. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
