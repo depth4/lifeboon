@@ -1,0 +1,60 @@
+name: Build and deploy to GitHub Pages
+
+# The site is a static bundle, so a push to the default branch is all it takes.
+# Manual runs are allowed too, for when Pages is enabled after the first push.
+on:
+  push:
+    branches: [claude/world-map-life-simulator-wthhom]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; queue them instead of cancelling a live one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Guards the OpenStreetMap import path, which cannot be exercised
+      # against the live service from CI.
+      - name: Test the OSM parser
+        run: npm test
+
+      # `npm run build` typechecks before bundling, so a type error fails here.
+      - name: Build
+        run: npm run build
+
+      # `enablement` turns Pages on via the API if it is not already enabled,
+      # which saves a trip to the repository settings on the first run.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "esbuild tests/parse-osm.ts --bundle --platform=node --format=esm --outfile=.tmp/parse-osm.mjs --log-level=error && node .tmp/parse-osm.mjs"
   },
   "dependencies": {
     "three": "^0.185.1"

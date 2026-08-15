@@ -29,7 +29,12 @@ import type { World } from './world/types';
 /** Where we start, when the network allows it: a dense, well-mapped centre. */
 const DEFAULT_PLACE: LatLon = { lat: 52.3702, lon: 4.8952 };
 const DEFAULT_PLACE_NAME = 'Amsterdam, Centrum';
-const DEFAULT_RADIUS_M = 750;
+/**
+ * Deliberately modest for the first load: Amsterdam's centre is dense enough
+ * that a wider box turns the opening screen into a long wait on a public
+ * Overpass mirror. Bigger areas are one dropdown away.
+ */
+const DEFAULT_RADIUS_M = 500;
 
 /** Yield to the browser so the loading UI can repaint between build steps. */
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
