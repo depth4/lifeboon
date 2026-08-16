@@ -15,6 +15,8 @@ const LAYER_HEIGHT = 5;
 const SURFACE_Y = 0.06;
 const MARKING_Y = 0.09;
 const PAVEMENT_Y = 0.15;
+/** Width of the kerb strip that separates carriageway from pavement. */
+const KERB_WIDTH = 0.3;
 
 const SURFACE_COLOR: Record<RoadClass, number> = {
   motorway: 0x4a4a4e,
@@ -31,7 +33,13 @@ const SURFACE_COLOR: Record<RoadClass, number> = {
   track: 0x77705f,
 };
 
-const PAVEMENT_COLOR = 0x9a958c;
+/**
+ * Pavement has to read as pavement against bare ground (0x9a9689 in
+ * render/ground.ts). The two used to differ by three points of blue, which is
+ * invisible — keep a real gap here, and let the darker kerb draw the edge.
+ */
+const PAVEMENT_COLOR = 0xc0bcb4;
+const KERB_COLOR = 0x8f8a83;
 
 export interface RoadMeshes {
   group: THREE.Group;
@@ -129,6 +137,7 @@ export function buildRoadMeshes(roads: Road[]): RoadMeshes {
 
   const color = new THREE.Color();
   const paveColor = new THREE.Color(PAVEMENT_COLOR);
+  const kerbColor = new THREE.Color(KERB_COLOR);
   const markColor = new THREE.Color(0xd8d2c4);
 
   for (const road of roads) {
@@ -141,11 +150,25 @@ export function buildRoadMeshes(roads: Road[]): RoadMeshes {
     emitRibbon(left, right, yBase + SURFACE_Y, color, surfPos, surfUv, surfCol, 8);
 
     // Pavements flank anything cars use; footpaths are already pavement.
+    //
+    // Argument order is load-bearing. emitRibbon winds its triangles assuming
+    // the first list is the one offsetPolyline calls `left`; hand it an
+    // inner-to-outer pair on the left-hand side and every triangle comes out
+    // face-down, which backface culling then hides completely. That is exactly
+    // what happened here — pavements were built for every street in the world
+    // and none of them were ever drawn.
     if (road.drivable && road.cls !== 'service') {
       const paveWidth = road.cls === 'primary' || road.cls === 'secondary' ? 3 : 2.2;
+      const kerb = offsetPolyline(road.points, half + KERB_WIDTH);
       const outer = offsetPolyline(road.points, half + paveWidth);
-      emitRibbon(left, outer.left, yBase + PAVEMENT_Y, paveColor, pavePos, paveUv, paveCol, 6);
-      emitRibbon(outer.right, right, yBase + PAVEMENT_Y, paveColor, pavePos, paveUv, paveCol, 6);
+
+      // Kerb first: a dark line along the edge of the carriageway is what
+      // makes the pavement beside it legible as a separate surface.
+      emitRibbon(kerb.left, left, yBase + PAVEMENT_Y, kerbColor, pavePos, paveUv, paveCol, 2);
+      emitRibbon(right, kerb.right, yBase + PAVEMENT_Y, kerbColor, pavePos, paveUv, paveCol, 2);
+
+      emitRibbon(outer.left, kerb.left, yBase + PAVEMENT_Y, paveColor, pavePos, paveUv, paveCol, 6);
+      emitRibbon(kerb.right, outer.right, yBase + PAVEMENT_Y, paveColor, pavePos, paveUv, paveCol, 6);
     }
 
     // A dashed centre line on roads big enough to have one.
