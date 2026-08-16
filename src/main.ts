@@ -19,7 +19,7 @@ import { Population, type Agent } from './sim/population';
 import { SceneRig } from './render/scene';
 import { CameraController } from './render/camera';
 import { buildBuildingMeshes, BuildingIndex, type BuildingMeshes } from './render/buildings';
-import { buildRoadMeshes, type RoadMeshes } from './render/roads';
+import { buildRailwayMeshes, buildRoadMeshes, type RoadMeshes } from './render/roads';
 import { buildGround, type GroundMeshes } from './render/ground';
 import { buildProps, type Props } from './render/props';
 import { PeopleRenderer } from './render/people';
@@ -60,6 +60,7 @@ class App {
 
   private buildingMeshes: BuildingMeshes | null = null;
   private roadMeshes: RoadMeshes | null = null;
+  private railMeshes: RoadMeshes | null = null;
   private groundMeshes: GroundMeshes | null = null;
   private props: Props | null = null;
   private readonly worldGroup = new THREE.Group();
@@ -188,6 +189,9 @@ class App {
     this.roadMeshes = buildRoadMeshes(world.roads);
     this.worldGroup.add(this.roadMeshes.group);
 
+    this.railMeshes = buildRailwayMeshes(world.railways);
+    this.worldGroup.add(this.railMeshes.group);
+
     this.hud.setLoading(`Raising ${world.stats.buildings.toLocaleString()} buildings…`, 0.8);
     await nextFrame();
     this.buildingMeshes = buildBuildingMeshes(world.buildings);
@@ -222,10 +226,12 @@ class App {
     this.worldGroup.clear();
     this.buildingMeshes?.dispose();
     this.roadMeshes?.dispose();
+    this.railMeshes?.dispose();
     this.groundMeshes?.dispose();
     this.props?.dispose();
     this.buildingMeshes = null;
     this.roadMeshes = null;
+    this.railMeshes = null;
     this.groundMeshes = null;
     this.props = null;
     this.graph = null;

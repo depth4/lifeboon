@@ -6,7 +6,7 @@
  */
 
 import type { Agent, Population } from '../sim/population';
-import type { Building, Poi, World } from '../world/types';
+import type { Building, DataAudit, Poi, World } from '../world/types';
 import { POI_LABEL } from '../data/tags';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -53,6 +53,7 @@ export class Hud {
   private readonly sourceBadge = $('source-badge');
   private readonly attribText = $('attrib-text');
   private readonly aboutAttrib = $('about-attrib');
+  private readonly aboutAudit = $('about-audit');
 
   private readonly clockTime = $('clock-time');
   private readonly clockDay = $('clock-day');
@@ -125,6 +126,53 @@ export class Hud {
 
     this.statBuildings.textContent = world.stats.buildings.toLocaleString();
     this.statRoads.textContent = `${world.stats.roadLengthKm.toFixed(1)} km`;
+    this.renderAudit(world.audit);
+  }
+
+  /**
+   * The coverage report. The pavement rows are the ones that matter most:
+   * OpenStreetMap distinguishes "surveyed, and there is no pavement" from
+   * "nobody has looked", and so does this table, because in thinly-mapped
+   * towns almost everything falls into the second category.
+   */
+  private renderAudit(audit: DataAudit | null): void {
+    if (!audit) {
+      this.aboutAudit.innerHTML =
+        '<p class="fineprint">Nothing to audit — this is the generated offline city, not real map data.</p>';
+      return;
+    }
+
+    const pct = (n: number, total: number) =>
+      total > 0 ? `${Math.round((n / total) * 100)}%` : '—';
+    const unsurveyed = audit.streetsTotal - audit.streetsWithSidewalkTag;
+
+    this.aboutAudit.innerHTML = `
+      <div class="audit">
+        <h4>Buildings</h4>
+        ${auditRow('Total', audit.buildingsTotal.toLocaleString())}
+        ${auditRow('Surveyed height', `${audit.buildingsWithHeight.toLocaleString()} · ${pct(audit.buildingsWithHeight, audit.buildingsTotal)}`)}
+        ${auditRow('Storey count only', `${audit.buildingsWithLevels.toLocaleString()} · ${pct(audit.buildingsWithLevels, audit.buildingsTotal)}`)}
+        ${auditRow('Height guessed by us', `${audit.buildingsGuessed.toLocaleString()} · ${pct(audit.buildingsGuessed, audit.buildingsTotal)}`, audit.buildingsGuessed > audit.buildingsTotal / 2)}
+
+        <h4>Walking</h4>
+        ${auditRow('Streets for cars', `${audit.roadKmDrivable.toFixed(1)} km`)}
+        ${auditRow('Pavements &amp; paths as their own lines', `${audit.roadKmFootway.toFixed(1)} km`, audit.roadKmFootway < 0.2)}
+        ${auditRow('Streets that say whether they have a pavement', `${audit.streetsWithSidewalkTag} of ${audit.streetsTotal}`)}
+        ${auditRow('…of those, pavement present', String(audit.sidewalkYes))}
+        ${auditRow('…of those, explicitly none', String(audit.sidewalkNo))}
+        ${auditRow('Streets nobody has surveyed', `${unsurveyed} of ${audit.streetsTotal}`, unsurveyed > audit.streetsTotal / 2)}
+        ${auditRow('Marked crossings', String(audit.crossings), audit.crossings === 0)}
+
+        <h4>Other</h4>
+        ${auditRow('Railway', `${audit.railwayKm.toFixed(1)} km`)}
+        ${auditRow('Places (shops, schools, cafes…)', audit.poisTotal.toLocaleString())}
+      </div>
+      <p class="fineprint">
+        A missing pavement tag means <em>nobody has mapped it</em>, not that the
+        street has no pavement. Highlighted rows are where this area is thin
+        enough that the simulation is filling gaps rather than reading facts.
+      </p>
+    `;
   }
 
   setPopulationCount(count: number): void {
@@ -312,6 +360,11 @@ export class Hud {
 }
 
 /* ------------------------------------------------------------- helpers */
+
+/** A row in the coverage table; `weak` flags a gap the simulation is papering over. */
+function auditRow(label: string, value: string, weak = false): string {
+  return `<div class="audit-row${weak ? ' is-weak' : ''}"><span>${label}</span><span>${escapeHtml(value)}</span></div>`;
+}
 
 function row(label: string, value: string): string {
   return `<div class="insp-row"><span>${escapeHtml(label)}</span><span>${escapeHtml(value)}</span></div>`;

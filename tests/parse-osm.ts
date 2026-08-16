@@ -126,6 +126,67 @@ const response: OverpassResponse = {
 
     // 10. Something we do not model at all — must be dropped silently.
     { type: 'node', id: 9, lat: lat0, lon: lon0, tags: { man_made: 'surveillance' } },
+
+    // 11. Railway: track, not a road, and never walkable.
+    {
+      type: 'way',
+      id: 11,
+      tags: { railway: 'rail', tracks: '2' },
+      geometry: [
+        { lat: lat0 - dLat * 9, lon: lon0 - dLon * 3 },
+        { lat: lat0 - dLat * 9, lon: lon0 + dLon * 7 },
+      ],
+    },
+
+    // 12. A street that has been surveyed and does have pavements.
+    {
+      type: 'way',
+      id: 12,
+      tags: { highway: 'residential', sidewalk: 'both' },
+      geometry: [
+        { lat: lat0 + dLat * 10, lon: lon0 },
+        { lat: lat0 + dLat * 10, lon: lon0 + dLon * 5 },
+      ],
+    },
+
+    // 13. A street surveyed as having none — a different fact from silence.
+    {
+      type: 'way',
+      id: 13,
+      tags: { highway: 'residential', sidewalk: 'no' },
+      geometry: [
+        { lat: lat0 + dLat * 12, lon: lon0 },
+        { lat: lat0 + dLat * 12, lon: lon0 + dLon * 5 },
+      ],
+    },
+
+    // 14. A pavement mapped as its own line.
+    {
+      type: 'way',
+      id: 14,
+      tags: { highway: 'footway', footway: 'sidewalk' },
+      geometry: [
+        { lat: lat0 + dLat * 10.4, lon: lon0 },
+        { lat: lat0 + dLat * 10.4, lon: lon0 + dLon * 5 },
+      ],
+    },
+
+    // 15. A marked crossing.
+    {
+      type: 'node',
+      id: 15,
+      lat: lat0 + dLat * 10,
+      lon: lon0 + dLon * 2,
+      tags: { highway: 'crossing' },
+    },
+
+    // 16. Railway platform — tagged `railway` but not track; must be ignored.
+    {
+      type: 'way',
+      id: 16,
+      tags: { railway: 'platform' },
+      geometry: square(lat0 - dLat * 11, lon0, 1),
+    },
   ],
 };
 
@@ -146,7 +207,8 @@ console.log('buildings:', world.buildings.length, 'roads:', world.roads.length,
 
 check('4 buildings parsed (3 ways + 1 relation)', world.buildings.length === 4, world.buildings.length);
 check('1 water area', world.areas.filter((a) => a.kind === 'water').length === 1);
-check('2 roads', world.roads.length === 2, world.roads.length);
+// One street, one footway, two surveyed streets, one mapped pavement line.
+check('5 roads', world.roads.length === 5, world.roads.length);
 check('2 POIs kept, unmodelled node dropped', world.pois.length === 2, world.pois.length);
 
 const b1 = world.buildings.find((b) => b.id === 'w1')!;
@@ -187,6 +249,39 @@ const shop = world.pois.find((p) => p.id === 'n8')!;
 check('supermarket categorised as groceries', shop.kind === 'groceries', shop.kind);
 check('no brand anywhere in the parsed world',
   !JSON.stringify(world).toLowerCase().includes('albert heijn'));
+
+// --- railways -------------------------------------------------------------
+check('one railway parsed, platform ignored', world.railways.length === 1, world.railways.length);
+check('railway track count read', world.railways[0]?.tracks === 2, world.railways[0]?.tracks);
+check('railway is not a road', !world.roads.some((r) => r.id === 'w11'));
+
+// --- pavement provenance --------------------------------------------------
+const surveyedYes = world.roads.find((r) => r.id === 'w12')!;
+const surveyedNo = world.roads.find((r) => r.id === 'w13')!;
+check('sidewalk=both read', surveyedYes.sidewalk === 'both', surveyedYes.sidewalk);
+check('sidewalk=no read', surveyedNo.sidewalk === 'no', surveyedNo.sidewalk);
+check(
+  'a street with no sidewalk tag stays undefined, not "no"',
+  street.sidewalk === undefined,
+  street.sidewalk,
+);
+check('footway=sidewalk flagged as its own pavement line',
+  world.roads.find((r) => r.id === 'w14')?.isSidewalkLine === true);
+
+// --- the coverage audit ---------------------------------------------------
+const audit = world.audit!;
+check('audit produced for OSM data', !!audit);
+check('audit counts all buildings', audit.buildingsTotal === 4, audit.buildingsTotal);
+check('audit counts the surveyed height', audit.buildingsWithHeight === 1, audit.buildingsWithHeight);
+check('audit counts storey-only buildings', audit.buildingsWithLevels === 1, audit.buildingsWithLevels);
+check('audit counts guessed heights', audit.buildingsGuessed === 2, audit.buildingsGuessed);
+check('audit counts pavement-capable streets', audit.streetsTotal === 3, audit.streetsTotal);
+check('audit counts surveyed streets', audit.streetsWithSidewalkTag === 2, audit.streetsWithSidewalkTag);
+check('audit splits present vs absent pavements',
+  audit.sidewalkYes === 1 && audit.sidewalkNo === 1, [audit.sidewalkYes, audit.sidewalkNo]);
+check('audit counts crossings', audit.crossings === 1, audit.crossings);
+check('audit measures railway length', audit.railwayKm > 0.2 && audit.railwayKm < 0.4, audit.railwayKm);
+check('audit measures separately-mapped footways', audit.roadKmFootway > 0, audit.roadKmFootway);
 
 check('stats report the OSM source', world.stats.source === 'osm');
 check('attribution present', world.stats.attribution.includes('OpenStreetMap'));

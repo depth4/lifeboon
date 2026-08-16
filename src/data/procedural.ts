@@ -162,6 +162,8 @@ export function generateCity(seedText = 'lifeboon', radius = 900): World {
       name: `${i + 1}${i % 10 === 0 ? 'st' : i % 10 === 1 ? 'nd' : 'th'} Avenue`,
       walkable: true,
       drivable: true,
+      isSidewalkLine: false,
+      isCrossing: false,
     });
   });
 
@@ -196,6 +198,8 @@ export function generateCity(seedText = 'lifeboon', radius = 900): World {
         name: `Street ${i + 1}`,
         walkable: true,
         drivable: true,
+        isSidewalkLine: false,
+        isCrossing: false,
       });
     });
   });
@@ -318,8 +322,10 @@ export function generateCity(seedText = 'lifeboon', radius = 900): World {
   return {
     buildings,
     roads,
+    railways: [],
     areas,
     pois,
+    audit: null,
     radius,
     seed,
     stats: {

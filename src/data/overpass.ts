@@ -52,6 +52,8 @@ function buildQuery(bbox: BBox): string {
   way["building"](${b});
   relation["building"]["type"="multipolygon"](${b});
   way["highway"](${b});
+  way["railway"](${b});
+  node["highway"="crossing"](${b});
   way["natural"~"^(water|wood|scrub|grassland|sand|beach)$"](${b});
   way["waterway"="riverbank"](${b});
   relation["natural"="water"]["type"="multipolygon"](${b});

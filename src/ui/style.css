@@ -578,6 +578,56 @@ kbd {
   color: var(--muted) !important;
 }
 
+/* ------------------------------------------------------- data audit */
+
+.audit {
+  margin: 10px 0 14px;
+}
+
+.audit h4 {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.audit h4:first-child {
+  margin-top: 0;
+}
+
+.audit-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.audit-row span:first-child {
+  color: #cdd3dd;
+}
+
+.audit-row span:last-child {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Rows where the map is thin enough that we are guessing, not reading. */
+.audit-row.is-weak {
+  background: rgba(255, 180, 84, 0.1);
+  border-bottom-color: rgba(255, 180, 84, 0.2);
+}
+
+.audit-row.is-weak span:last-child {
+  color: var(--warn);
+}
+
 /* ------------------------------------------------------------ responsive */
 
 @media (max-width: 900px) {

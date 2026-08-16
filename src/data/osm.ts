@@ -12,7 +12,9 @@ import { hashString } from '../core/rng';
 import type {
   AreaFeature,
   Building,
+  DataAudit,
   Poi,
+  Railway,
   Road,
   Vec2,
   World,
@@ -23,11 +25,17 @@ import {
   buildingCapacity,
   buildingHeight,
   buildingKind,
+  isCrossing,
   isDrivable,
+  isSidewalkLine,
   isWalkable,
+  parseHeight,
   poiKind,
+  railKind,
+  railTracks,
   roadClass,
   roadWidth,
+  sidewalkTag,
   type Tags,
 } from './tags';
 
@@ -133,8 +141,13 @@ export function pointInRing(p: Vec2, ring: Ring): boolean {
 interface Accumulator {
   buildings: Building[];
   roads: Road[];
+  railways: Railway[];
   areas: AreaFeature[];
   poiSeeds: Array<{ id: string; position: Vec2; kind: NonNullable<ReturnType<typeof poiKind>> }>;
+  /** Coverage counters, gathered while parsing rather than re-derived later. */
+  buildingsWithHeight: number;
+  buildingsWithLevels: number;
+  crossingNodes: number;
 }
 
 function addBuilding(
@@ -151,6 +164,14 @@ function addBuilding(
 
   const kind = buildingKind(tags);
   const { height, minHeight, levels } = buildingHeight(tags, kind, area);
+
+  // Track where the height came from, so the UI can be honest about coverage.
+  if (parseHeight(tags.height) ?? parseHeight(tags['building:height'])) {
+    acc.buildingsWithHeight++;
+  } else if (tags['building:levels'] || tags.levels) {
+    acc.buildingsWithLevels++;
+  }
+
   const building: Building = {
     id,
     ring,
@@ -187,6 +208,20 @@ function handleWay(el: OverpassElement, proj: Projection, acc: Accumulator): voi
   const geom = el.geometry;
   if (!geom || geom.length < 2) return;
 
+  const rail = railKind(tags);
+  if (rail) {
+    acc.railways.push({
+      id: `w${el.id}`,
+      points: projectGeometry(geom, proj),
+      kind: rail,
+      tracks: railTracks(tags),
+      layer: parseInt(tags.layer ?? '0', 10) || 0,
+      bridge: !!tags.bridge && tags.bridge !== 'no',
+      tunnel: !!tags.tunnel && tags.tunnel !== 'no',
+    });
+    return;
+  }
+
   const cls = roadClass(tags);
   if (cls) {
     const { width, lanes } = roadWidth(tags, cls);
@@ -204,6 +239,9 @@ function handleWay(el: OverpassElement, proj: Projection, acc: Accumulator): voi
       name: tags.name,
       walkable: isWalkable(cls, tags),
       drivable: isDrivable(cls, tags),
+      sidewalk: sidewalkTag(tags),
+      isSidewalkLine: isSidewalkLine(tags),
+      isCrossing: isCrossing(tags),
     });
     return;
   }
@@ -253,7 +291,12 @@ function handleRelation(el: OverpassElement, proj: Projection, acc: Accumulator)
 
 function handleNode(el: OverpassElement, proj: Projection, acc: Accumulator): void {
   if (el.lat === undefined || el.lon === undefined) return;
-  const kind = poiKind(el.tags ?? {});
+  const tags = el.tags ?? {};
+  if (tags.highway === 'crossing') {
+    acc.crossingNodes++;
+    return;
+  }
+  const kind = poiKind(tags);
   if (!kind) return;
   acc.poiSeeds.push({ id: `n${el.id}`, position: proj.project(el.lat, el.lon), kind });
 }
@@ -321,7 +364,10 @@ export function parseOsm(
   placeName: string,
 ): World {
   const proj = Projection.fromBBox(bbox);
-  const acc: Accumulator = { buildings: [], roads: [], areas: [], poiSeeds: [] };
+  const acc: Accumulator = {
+    buildings: [], roads: [], railways: [], areas: [], poiSeeds: [],
+    buildingsWithHeight: 0, buildingsWithLevels: 0, crossingNodes: 0,
+  };
 
   for (const el of response.elements) {
     switch (el.type) {
@@ -345,21 +391,17 @@ export function parseOsm(
   const size = bboxSizeM(bbox);
   const radius = Math.max(size.width, size.height) / 2;
 
-  let roadLength = 0;
-  for (const r of acc.roads) {
-    for (let i = 1; i < r.points.length; i++) {
-      roadLength += Math.hypot(
-        r.points[i][0] - r.points[i - 1][0],
-        r.points[i][1] - r.points[i - 1][1],
-      );
-    }
-  }
+  const audit = buildAudit(acc, pois.length);
+  const roadLength =
+    acc.roads.reduce((sum, r) => sum + polylineLength(r.points), 0);
 
   return {
     buildings: acc.buildings,
     roads: acc.roads,
+    railways: acc.railways,
     areas: acc.areas,
     pois,
+    audit,
     radius,
     seed: hashString(`${bbox.south.toFixed(4)},${bbox.west.toFixed(4)}`),
     stats: {
@@ -372,5 +414,70 @@ export function parseOsm(
       placeName,
       attribution: OSM_ATTRIBUTION,
     },
+  };
+}
+
+function polylineLength(points: Vec2[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+  }
+  return total;
+}
+
+/**
+ * Summarise what the map actually contained.
+ *
+ * Deliberately reports "unsurveyed" separately from "surveyed as absent" for
+ * pavements, because conflating the two is what makes a thinly-mapped town
+ * look like a town with no pavements.
+ */
+function buildAudit(acc: Accumulator, poisTotal: number): DataAudit {
+  let roadKmDrivable = 0;
+  let roadKmFootway = 0;
+  let streetsTotal = 0;
+  let streetsWithSidewalkTag = 0;
+  let sidewalkYes = 0;
+  let sidewalkNo = 0;
+  let crossingWays = 0;
+
+  for (const road of acc.roads) {
+    const km = polylineLength(road.points) / 1000;
+    if (road.isCrossing) crossingWays++;
+
+    if (road.drivable) {
+      roadKmDrivable += km;
+      // Only streets that could plausibly have a pavement are worth counting.
+      if (road.cls !== 'service' && road.cls !== 'motorway' && road.cls !== 'trunk') {
+        streetsTotal++;
+        if (road.sidewalk) {
+          streetsWithSidewalkTag++;
+          if (road.sidewalk === 'no') sidewalkNo++;
+          else if (road.sidewalk !== 'separate') sidewalkYes++;
+        }
+      }
+    } else if (road.cls === 'footway' || road.cls === 'pedestrian' || road.cls === 'steps') {
+      roadKmFootway += km;
+    }
+  }
+
+  const railwayKm =
+    acc.railways.reduce((sum, r) => sum + polylineLength(r.points), 0) / 1000;
+
+  return {
+    buildingsTotal: acc.buildings.length,
+    buildingsWithHeight: acc.buildingsWithHeight,
+    buildingsWithLevels: acc.buildingsWithLevels,
+    buildingsGuessed:
+      acc.buildings.length - acc.buildingsWithHeight - acc.buildingsWithLevels,
+    roadKmDrivable,
+    roadKmFootway,
+    streetsTotal,
+    streetsWithSidewalkTag,
+    sidewalkYes,
+    sidewalkNo,
+    crossings: acc.crossingNodes + crossingWays,
+    railwayKm,
+    poisTotal,
   };
 }

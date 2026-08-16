@@ -73,6 +73,61 @@ export interface Road {
   walkable: boolean;
   /** Whether cars may use it. */
   drivable: boolean;
+  /**
+   * What the map says about pavements beside this street.
+   *
+   * `undefined` is the important value: it means nobody has surveyed it, NOT
+   * that there is no pavement. Treating a missing tag as "no pavement" is the
+   * classic way to misread OpenStreetMap, and in thinly-mapped towns it is
+   * wrong almost everywhere.
+   */
+  sidewalk?: SidewalkTag;
+  /** True when this way is itself a pavement mapped as a separate line. */
+  isSidewalkLine: boolean;
+  /** True when this way is a marked pedestrian crossing. */
+  isCrossing: boolean;
+}
+
+export type SidewalkTag = 'both' | 'left' | 'right' | 'no' | 'separate';
+
+export type RailKind = 'rail' | 'light_rail' | 'tram' | 'subway' | 'disused';
+
+export interface Railway {
+  id: string;
+  points: Vec2[];
+  kind: RailKind;
+  /** Number of parallel tracks, where the map says. */
+  tracks: number;
+  layer: number;
+  bridge: boolean;
+  tunnel: boolean;
+}
+
+/**
+ * What the map actually contained for this place.
+ *
+ * The point of this is honesty about coverage: a district where 4% of
+ * buildings have a surveyed height is a different object from one where 90%
+ * do, and the simulation should not pretend otherwise.
+ */
+export interface DataAudit {
+  buildingsTotal: number;
+  buildingsWithHeight: number;
+  buildingsWithLevels: number;
+  buildingsGuessed: number;
+
+  roadKmDrivable: number;
+  /** Pavements and paths mapped as their own lines. */
+  roadKmFootway: number;
+  /** Streets carrying an explicit sidewalk=* tag, and what it says. */
+  streetsTotal: number;
+  streetsWithSidewalkTag: number;
+  sidewalkYes: number;
+  sidewalkNo: number;
+
+  crossings: number;
+  railwayKm: number;
+  poisTotal: number;
 }
 
 export type AreaKind =
@@ -137,8 +192,11 @@ export interface WorldStats {
 export interface World {
   buildings: Building[];
   roads: Road[];
+  railways: Railway[];
   areas: AreaFeature[];
   pois: Poi[];
+  /** Null for the generated offline city, which has nothing to audit. */
+  audit: DataAudit | null;
   /** Half-extent of the loaded area in metres, used to size ground and fog. */
   radius: number;
   stats: WorldStats;

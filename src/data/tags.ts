@@ -9,7 +9,7 @@
  *    identity (which chain it is). Street names survive: they are geography.
  */
 
-import type { BuildingKind, PoiKind, RoadClass } from '../world/types';
+import type { BuildingKind, PoiKind, RailKind, RoadClass, SidewalkTag } from '../world/types';
 
 export type Tags = Record<string, string>;
 
@@ -210,6 +210,78 @@ export function isWalkable(cls: RoadClass, tags: Tags): boolean {
 export function isDrivable(cls: RoadClass, tags: Tags): boolean {
   if (tags.motor_vehicle === 'no' || tags.access === 'no') return false;
   return DRIVABLE.has(cls);
+}
+
+/**
+ * Read what the map says about pavements beside a street.
+ *
+ * Returns undefined when the street carries no sidewalk information at all —
+ * which is the majority of OpenStreetMap and must not be confused with
+ * `sidewalk=no`. "Unsurveyed" and "surveyed, and there isn't one" are
+ * different facts, and only one of them is a fact about the street.
+ */
+export function sidewalkTag(tags: Tags): SidewalkTag | undefined {
+  const raw = tags.sidewalk ?? tags['sidewalk:both'];
+  const left = tags['sidewalk:left'];
+  const right = tags['sidewalk:right'];
+
+  if (raw) {
+    switch (raw) {
+      case 'both': case 'yes': return 'both';
+      case 'left': return 'left';
+      case 'right': return 'right';
+      case 'no': case 'none': return 'no';
+      case 'separate': return 'separate';
+    }
+  }
+  // The namespaced form: sidewalk:left=yes / sidewalk:right=no.
+  const hasLeft = left && left !== 'no' && left !== 'separate';
+  const hasRight = right && right !== 'no' && right !== 'separate';
+  if (hasLeft && hasRight) return 'both';
+  if (hasLeft) return 'left';
+  if (hasRight) return 'right';
+  if (left === 'separate' || right === 'separate') return 'separate';
+  if (left === 'no' && right === 'no') return 'no';
+  return undefined;
+}
+
+/** A way that is itself a pavement, rather than a street that has one. */
+export function isSidewalkLine(tags: Tags): boolean {
+  return tags.footway === 'sidewalk' || tags.path === 'sidewalk';
+}
+
+export function isCrossing(tags: Tags): boolean {
+  return tags.footway === 'crossing' || tags.path === 'crossing' ||
+    tags.cycleway === 'crossing' || tags.highway === 'crossing';
+}
+
+const RAIL_KINDS: Record<string, RailKind> = {
+  rail: 'rail',
+  light_rail: 'light_rail',
+  tram: 'tram',
+  subway: 'subway',
+  narrow_gauge: 'rail',
+  preserved: 'disused',
+  disused: 'disused',
+  abandoned: 'disused',
+};
+
+export function railKind(tags: Tags): RailKind | undefined {
+  const value = tags.railway;
+  if (!value) return undefined;
+  // Platforms, level crossings and signals are not track.
+  if (value === 'platform' || value === 'station' || value === 'level_crossing' ||
+      value === 'crossing' || value === 'signal' || value === 'switch' ||
+      value === 'buffer_stop' || value === 'razed') {
+    return undefined;
+  }
+  return RAIL_KINDS[value];
+}
+
+export function railTracks(tags: Tags): number {
+  const n = parseFloat(tags.tracks ?? '');
+  if (isFinite(n) && n >= 1 && n < 12) return Math.round(n);
+  return 1;
 }
 
 /**

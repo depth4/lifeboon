@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import type { Road, RoadClass, Vec2 } from '../world/types';
+import type { Railway, Road, RoadClass, Vec2 } from '../world/types';
 import { asphaltTexture } from './textures';
 
 /** Height above ground per layer, so bridges clear what they cross. */
@@ -242,6 +242,86 @@ export function buildRoadMeshes(roads: Road[]): RoadMeshes {
       paveMat.dispose();
       markMat.dispose();
       asphalt.dispose();
+    },
+  };
+}
+
+/**
+ * Railways: a ballast bed with rails on top.
+ *
+ * Track is not part of the pedestrian graph — people do not walk along the
+ * railway — but it matters visually out of all proportion to its length,
+ * because in a small town the line is often the thing that decides which side
+ * of it you live on.
+ */
+export function buildRailwayMeshes(railways: Railway[]): RoadMeshes {
+  const pos: number[] = [];
+  const uv: number[] = [];
+  const col: number[] = [];
+
+  const ballastColor = new THREE.Color(0x6b6259);
+  const railColor = new THREE.Color(0x9a9186);
+  const sleeperColor = new THREE.Color(0x4f463c);
+  const TRACK_GAUGE = 1.52;
+  const TRACK_SPACING = 4.2;
+
+  for (const line of railways) {
+    if (line.points.length < 2) continue;
+    if (line.tunnel) continue; // Underground track is not visible from here.
+
+    const yBase = line.layer * LAYER_HEIGHT;
+    const tracks = Math.max(1, Math.min(6, line.tracks));
+    const halfBed = (tracks * TRACK_SPACING) / 2 + 0.8;
+
+    // Ballast bed.
+    const bed = offsetPolyline(line.points, halfBed);
+    const bedColor = line.kind === 'disused' ? sleeperColor : ballastColor;
+    emitRibbon(bed.left, bed.right, yBase + SURFACE_Y, bedColor, pos, uv, col, 4);
+
+    // Two rails per track, offset from the line's centre.
+    for (let t = 0; t < tracks; t++) {
+      const centre = (t - (tracks - 1) / 2) * TRACK_SPACING;
+      for (const side of [-1, 1]) {
+        const railCentre = centre + (side * TRACK_GAUGE) / 2;
+        // A rail head is ~7 cm wide; widen it so it survives at distance.
+        const inner = offsetPolyline(line.points, railCentre - 0.09);
+        const outer = offsetPolyline(line.points, railCentre + 0.09);
+        emitRibbon(inner.right, outer.right, yBase + MARKING_Y, railColor, pos, uv, col, 4);
+      }
+    }
+  }
+
+  const group = new THREE.Group();
+  group.name = 'railways';
+  const geoms: THREE.BufferGeometry[] = [];
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.9,
+    metalness: 0.25,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+
+  if (pos.length) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geom.computeVertexNormals();
+    geom.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.receiveShadow = true;
+    mesh.name = 'railways:track';
+    group.add(mesh);
+    geoms.push(geom);
+  }
+
+  return {
+    group,
+    dispose() {
+      for (const g of geoms) g.dispose();
+      mat.dispose();
     },
   };
 }
