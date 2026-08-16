@@ -67,9 +67,11 @@ export class SceneRig {
       canvas,
       antialias: true,
       powerPreference: 'high-performance',
-      // Depth range is handled by moving the near plane, not by a log buffer:
-      // logarithmic depth costs fill rate and breaks polygon offset on roads.
-      logarithmicDepthBuffer: false,
+      // Terrain widened the depth range enough that moving the near plane is
+      // no longer sufficient on its own. A logarithmic buffer distributes
+      // precision across the whole range instead of crowding it near the
+      // camera, which is what a view spanning a doorstep and a horizon needs.
+      logarithmicDepthBuffer: true,
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;

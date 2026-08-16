@@ -283,14 +283,22 @@ export class CameraController {
   }
 
   /**
-   * Depth range from altitude. A fixed near plane of, say, 0.1 m would waste
-   * almost all depth precision when the camera is 5 km up; a fixed 10 m would
-   * clip your own feet in walk mode.
+   * Depth range from altitude.
+   *
+   * Precision in a depth buffer falls off with the ratio of far to near, and
+   * it is the NEAR plane that dominates: at 8 cm near and 3 km far, two
+   * surfaces a kilometre away cannot be told apart until they are tens of
+   * centimetres apart. That is what made road markings and land cover flicker
+   * as soon as the camera turned towards the horizon from street level.
+   *
+   * So the near plane now has a real floor, and the far plane is tied to how
+   * far you can actually see rather than to a fixed number — there is no point
+   * keeping 3 km of range alive when fog closes the view at 1.6 km.
    */
   private updateProjection(): void {
     const alt = Math.max(1, this.camera.position.y);
-    const near = clamp(alt * 0.02, 0.08, 12);
-    const far = clamp(alt * 60, 3000, 60000);
+    const near = clamp(alt * 0.05, 0.6, 20);
+    const far = clamp(Math.max(alt * 40, this.currentDistance * 12), 1500, 50000);
     if (this.camera.near !== near || this.camera.far !== far) {
       this.camera.near = near;
       this.camera.far = far;
