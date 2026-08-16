@@ -13,7 +13,7 @@
 
 import type { BBox } from '../core/geo';
 import { Projection } from '../core/geo';
-import type { AreaFeature } from '../world/types';
+import type { AreaFeature, Waterway } from '../world/types';
 import { Heightfield } from './heightfield';
 import type { Terrain } from './heightfield';
 
@@ -262,9 +262,11 @@ export function syntheticHeightfield(radius: number, seed: number): Heightfield 
 export function carveWaterways(
   terrain: Terrain,
   areas: AreaFeature[],
-): Map<string, number> {
+  waterways: Waterway[] = [],
+): { areaLevels: Map<string, number>; flowLevels: Map<string, number[]> } {
   const levels = new Map<string, number>();
-  if (!(terrain instanceof Heightfield)) return levels;
+  const flowLevels = new Map<string, number[]>();
+  if (!(terrain instanceof Heightfield)) return { areaLevels: levels, flowLevels };
 
   for (const area of areas) {
     if (area.kind !== 'water' || area.ring.length < 3) continue;
@@ -283,6 +285,31 @@ export function carveWaterways(
     levels.set(area.id, level);
   }
 
-  if (levels.size) terrain.recomputeBounds();
-  return levels;
+  // Narrow rivers are lines, and a line needs a profile rather than one level:
+  // water runs downhill. Taking a running minimum from the higher end
+  // guarantees it never flows uphill, whatever noise the elevation data has.
+  for (const flow of waterways) {
+    if (flow.tunnel || flow.points.length < 2) continue;
+
+    const raw = flow.points.map(([x, z]) => terrain.heightAt(x, z));
+    const startsHigher = raw[0] >= raw[raw.length - 1];
+    const profile = raw.slice();
+    if (startsHigher) {
+      for (let i = 1; i < profile.length; i++) {
+        profile[i] = Math.min(profile[i], profile[i - 1]);
+      }
+    } else {
+      for (let i = profile.length - 2; i >= 0; i--) {
+        profile[i] = Math.min(profile[i], profile[i + 1]);
+      }
+    }
+
+    // A stream cuts a shallower channel than a river.
+    const depth = Math.max(0.6, Math.min(2.5, flow.width * 0.25));
+    terrain.carveAlong(flow.points, flow.width / 2 + 1, profile, depth);
+    flowLevels.set(flow.id, profile);
+  }
+
+  if (levels.size || flowLevels.size) terrain.recomputeBounds();
+  return { areaLevels: levels, flowLevels };
 }

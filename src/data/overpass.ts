@@ -56,6 +56,7 @@ function buildQuery(bbox: BBox): string {
   node["highway"="crossing"](${b});
   way["natural"~"^(water|wood|scrub|grassland|sand|beach)$"](${b});
   way["waterway"="riverbank"](${b});
+  way["waterway"~"^(river|stream|canal|ditch|drain)$"](${b});
   relation["natural"="water"]["type"="multipolygon"](${b});
   way["landuse"~"^(grass|forest|meadow|village_green|cemetery|recreation_ground|reservoir|basin)$"](${b});
   way["leisure"~"^(park|garden|pitch|playground|sports_centre)$"](${b});
@@ -124,8 +125,9 @@ async function cachePut(key: string, data: OverpassResponse): Promise<void> {
  * exactly how railways came back as 0.0 km for a town that plainly has one.
  *
  * v2: added railways and pedestrian crossings.
+ * v3: added waterway lines — narrow rivers and streams are ways, not areas.
  */
-const QUERY_VERSION = 2;
+const QUERY_VERSION = 3;
 
 function cacheKey(bbox: BBox): string {
   const box = [bbox.south, bbox.west, bbox.north, bbox.east].map((v) => v.toFixed(5)).join(',');

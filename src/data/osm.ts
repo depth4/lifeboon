@@ -17,6 +17,7 @@ import type {
   Railway,
   Road,
   Vec2,
+  Waterway,
   World,
 } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
@@ -38,6 +39,8 @@ import {
   roadClass,
   roadWidth,
   sidewalkTag,
+  waterwayKind,
+  waterwayWidth,
   type Tags,
 } from './tags';
 
@@ -144,6 +147,7 @@ interface Accumulator {
   buildings: Building[];
   roads: Road[];
   railways: Railway[];
+  waterways: Waterway[];
   areas: AreaFeature[];
   poiSeeds: Array<{ id: string; position: Vec2; kind: NonNullable<ReturnType<typeof poiKind>> }>;
   /** Coverage counters, gathered while parsing rather than re-derived later. */
@@ -209,6 +213,20 @@ function handleWay(el: OverpassElement, proj: Projection, acc: Accumulator): voi
   const tags = el.tags ?? {};
   const geom = el.geometry;
   if (!geom || geom.length < 2) return;
+
+  // A narrow river is a line, not an area. `waterway=riverbank` is the old
+  // tag for the polygon form and is handled with the other areas below.
+  const flow = tags.waterway === 'riverbank' ? undefined : waterwayKind(tags);
+  if (flow) {
+    acc.waterways.push({
+      id: `w${el.id}`,
+      points: projectGeometry(geom, proj),
+      kind: flow,
+      width: waterwayWidth(tags, flow),
+      tunnel: !!tags.tunnel && tags.tunnel !== 'no',
+    });
+    return;
+  }
 
   const rail = railKind(tags);
   if (rail) {
@@ -368,7 +386,7 @@ export function parseOsm(
 ): World {
   const proj = Projection.fromBBox(bbox);
   const acc: Accumulator = {
-    buildings: [], roads: [], railways: [], areas: [], poiSeeds: [],
+    buildings: [], roads: [], railways: [], waterways: [], areas: [], poiSeeds: [],
     buildingsWithHeight: 0, buildingsWithLevels: 0, crossingNodes: 0,
   };
 
@@ -402,6 +420,7 @@ export function parseOsm(
     buildings: acc.buildings,
     roads: acc.roads,
     railways: acc.railways,
+    waterways: acc.waterways,
     areas: acc.areas,
     pois,
     audit,

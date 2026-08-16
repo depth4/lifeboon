@@ -156,6 +156,54 @@ export class Heightfield implements Terrain {
     return changed;
   }
 
+  /**
+   * Cut a channel along a line — a narrow river, which OSM maps as a way
+   * rather than a polygon. `levels` gives the water surface at each point;
+   * the bed is cut to `depth` below it.
+   */
+  carveAlong(
+    points: Array<[number, number]>,
+    halfWidth: number,
+    levels: number[],
+    depth: number,
+  ): boolean {
+    let changed = false;
+    const reach = halfWidth + this.resolution;
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const [ax, az] = points[i];
+      const [bx, bz] = points[i + 1];
+      const segLen2 = (bx - ax) ** 2 + (bz - az) ** 2;
+      if (segLen2 < 1e-6) continue;
+
+      const c0 = Math.max(0, Math.floor((Math.min(ax, bx) - reach - this.originX) / this.resolution));
+      const c1 = Math.min(this.cols - 1, Math.ceil((Math.max(ax, bx) + reach - this.originX) / this.resolution));
+      const r0 = Math.max(0, Math.floor((Math.min(az, bz) - reach - this.originZ) / this.resolution));
+      const r1 = Math.min(this.rows - 1, Math.ceil((Math.max(az, bz) + reach - this.originZ) / this.resolution));
+
+      for (let r = r0; r <= r1; r++) {
+        const z = this.originZ + r * this.resolution;
+        for (let c = c0; c <= c1; c++) {
+          const x = this.originX + c * this.resolution;
+          // Distance to the segment, and how far along it we are.
+          let t = ((x - ax) * (bx - ax) + (z - az) * (bz - az)) / segLen2;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const px = ax + (bx - ax) * t;
+          const pz = az + (bz - az) * t;
+          if ((x - px) ** 2 + (z - pz) ** 2 > halfWidth * halfWidth) continue;
+
+          const level = levels[i] + (levels[i + 1] - levels[i]) * t - depth;
+          const idx = r * this.cols + c;
+          if (this.data[idx] > level) {
+            this.data[idx] = level;
+            changed = true;
+          }
+        }
+      }
+    }
+    return changed;
+  }
+
   /** Call after carving; the stored bounds are otherwise stale. */
   recomputeBounds(): void {
     let min = Infinity;

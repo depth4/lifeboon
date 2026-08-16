@@ -92,6 +92,25 @@ export interface Road {
 
 export type SidewalkTag = 'both' | 'left' | 'right' | 'no' | 'separate';
 
+export type WaterwayKind = 'river' | 'stream' | 'canal' | 'ditch' | 'drain';
+
+/**
+ * Flowing water mapped as a line rather than an area.
+ *
+ * Only wide rivers get a polygon in OpenStreetMap; anything narrower than a
+ * few metres — which is most of them — is a single way with a width tag, if
+ * that. Querying only polygons leaves a town with its ponds and no river
+ * between them.
+ */
+export interface Waterway {
+  id: string;
+  points: Vec2[];
+  kind: WaterwayKind;
+  /** Surface width in metres, from the tag where present. */
+  width: number;
+  tunnel: boolean;
+}
+
 export type RailKind = 'rail' | 'light_rail' | 'tram' | 'subway' | 'disused';
 
 export interface Railway {
@@ -198,6 +217,7 @@ export interface World {
   buildings: Building[];
   roads: Road[];
   railways: Railway[];
+  waterways: Waterway[];
   areas: AreaFeature[];
   pois: Poi[];
   /** Null for the generated offline city, which has nothing to audit. */

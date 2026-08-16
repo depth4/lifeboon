@@ -13,9 +13,10 @@
  */
 
 import * as THREE from 'three';
-import type { AreaFeature, AreaKind, Vec2 } from '../world/types';
+import type { AreaFeature, AreaKind, Vec2, Waterway } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
 import { groundTexture } from './textures';
+import { emitRibbon, offsetPolyline } from './roads';
 
 const AREA_COLOR: Record<AreaKind, number> = {
   water: 0x3d6b8a,
@@ -41,15 +42,28 @@ const AREA_COLOR: Record<AreaKind, number> = {
  */
 const AREA_LIFT: Record<AreaKind, number> = {
   water: 0.0,
-  park: 0.10,
-  forest: 0.11,
-  grass: 0.09,
-  sand: 0.12,
-  pitch: 0.14,
-  cemetery: 0.11,
-  parking: 0.13,
-  pavement: 0.15,
+  park: 0.05,
+  forest: 0.05,
+  grass: 0.04,
+  sand: 0.06,
+  pitch: 0.07,
+  cemetery: 0.05,
+  parking: 0.06,
+  pavement: 0.07,
 };
+
+/**
+ * Extra height per level of nesting.
+ *
+ * Land-cover polygons in OpenStreetMap sit inside one another routinely — a
+ * lawn inside a park inside a recreation ground — and two overlapping surfaces
+ * a centimetre apart is the same z-fighting as before, just between two greens
+ * instead of green and soil. Separating by how deeply a polygon is nested puts
+ * each one cleanly above whatever contains it, and nesting is rarely more than
+ * two or three deep, so the stack stays shallow enough to pass under the road.
+ */
+const NESTING_STEP = 0.035;
+const MAX_NESTING = 3;
 
 /** Ground colours blended by steepness: turf on the flat, bare earth on slopes. */
 const FLAT_GROUND = new THREE.Color(0x8a9166);
@@ -95,12 +109,52 @@ function stretch(u: number, radius: number): number {
   return radius * (u + u * u * u * u * u * (HORIZON_FACTOR - 1));
 }
 
+/**
+ * How many other land-cover polygons contain this one.
+ *
+ * Bounding boxes filter the candidates first, so this stays cheap even with a
+ * few thousand areas; only a handful survive to the point-in-polygon test.
+ */
+function nestingDepths(areas: AreaFeature[]): number[] {
+  const boxes = areas.map((a) => {
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const [x, z] of a.ring) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+    return { minX, maxX, minZ, maxZ, span: (maxX - minX) * (maxZ - minZ) };
+  });
+
+  return areas.map((a, i) => {
+    const me = boxes[i];
+    // A representative interior point: the first vertex is on the boundary, so
+    // nudge towards the middle of the bounding box.
+    const px = (a.ring[0][0] + (me.minX + me.maxX) / 2) / 2;
+    const pz = (a.ring[0][1] + (me.minZ + me.maxZ) / 2) / 2;
+
+    let depth = 0;
+    for (let j = 0; j < areas.length && depth < MAX_NESTING; j++) {
+      if (j === i) continue;
+      const other = boxes[j];
+      // Only something strictly larger can contain us.
+      if (other.span <= me.span) continue;
+      if (px < other.minX || px > other.maxX || pz < other.minZ || pz > other.maxZ) continue;
+      if (inRing([px, pz], areas[j].ring)) depth++;
+    }
+    return depth;
+  });
+}
+
 export function buildGround(
   areas: AreaFeature[],
   radius: number,
   seed: number,
   terrain: Terrain,
   waterLevels: Map<string, number> = new Map(),
+  waterways: Waterway[] = [],
+  flowLevels: Map<string, number[]> = new Map(),
 ): GroundMeshes {
   const group = new THREE.Group();
   group.name = 'ground';
@@ -196,12 +250,14 @@ export function buildGround(
     return treeSeed / 4294967296;
   };
 
-  for (const area of areas) {
+  const depths = nestingDepths(areas);
+
+  areas.forEach((area, areaIndex) => {
     const tri = triangulate(area.ring, area.holes);
-    if (!tri) continue;
+    if (!tri) return;
     const isWater = area.kind === 'water';
     color.set(AREA_COLOR[area.kind]);
-    const lift = AREA_LIFT[area.kind];
+    const lift = AREA_LIFT[area.kind] + depths[areaIndex] * NESTING_STEP;
 
     // Standing water is level, and its surface goes exactly where the bed was
     // carved for it — recomputing it here from the now-carved terrain would
@@ -233,6 +289,16 @@ export function buildGround(
     if (area.kind === 'forest' || area.kind === 'park') {
       scatterTrees(area, area.kind === 'forest' ? 0.006 : 0.0016, rand, treeSpots);
     }
+  });
+
+  // --- rivers and streams, which are lines rather than areas --------------
+  const flowColor = new THREE.Color(AREA_COLOR.water);
+  for (const flow of waterways) {
+    if (flow.tunnel || flow.points.length < 2) continue;
+    const profile = flowLevels.get(flow.id)
+      ?? flow.points.map(([x, z]) => terrain.heightAt(x, z));
+    const { left, right } = offsetPolyline(flow.points, flow.width / 2);
+    emitRibbon(left, right, profile, flowColor, waterPos, [], [], 8);
   }
 
   if (landPos.length) {

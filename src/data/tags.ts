@@ -9,7 +9,7 @@
  *    identity (which chain it is). Street names survive: they are geography.
  */
 
-import type { BuildingKind, PoiKind, RailKind, RoadClass, SidewalkTag } from '../world/types';
+import type { BuildingKind, PoiKind, RailKind, RoadClass, SidewalkTag, WaterwayKind } from '../world/types';
 
 export type Tags = Record<string, string>;
 
@@ -253,6 +253,35 @@ export function isSidewalkLine(tags: Tags): boolean {
 export function isCrossing(tags: Tags): boolean {
   return tags.footway === 'crossing' || tags.path === 'crossing' ||
     tags.cycleway === 'crossing' || tags.highway === 'crossing';
+}
+
+const WATERWAY_KINDS: Record<string, WaterwayKind> = {
+  river: 'river',
+  stream: 'stream',
+  canal: 'canal',
+  ditch: 'ditch',
+  drain: 'drain',
+};
+
+/** Default surface widths where the map does not say, in metres. */
+const WATERWAY_WIDTH: Record<WaterwayKind, number> = {
+  river: 9,
+  stream: 2.5,
+  canal: 7,
+  ditch: 1.4,
+  drain: 1.2,
+};
+
+export function waterwayKind(tags: Tags): WaterwayKind | undefined {
+  const value = tags.waterway;
+  if (!value) return undefined;
+  return WATERWAY_KINDS[value];
+}
+
+export function waterwayWidth(tags: Tags, kind: WaterwayKind): number {
+  const tagged = parseHeight(tags.width) ?? parseHeight(tags['water:width']);
+  if (tagged && tagged > 0.3 && tagged < 400) return tagged;
+  return WATERWAY_WIDTH[kind];
 }
 
 const RAIL_KINDS: Record<string, RailKind> = {

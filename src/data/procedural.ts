@@ -324,6 +324,7 @@ export function generateCity(seedText = 'lifeboon', radius = 900): World {
     buildings,
     roads,
     railways: [],
+    waterways: [],
     areas,
     pois,
     audit: null,

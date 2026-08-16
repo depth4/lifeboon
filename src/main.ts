@@ -192,9 +192,10 @@ class App {
     // Cut the river beds before anything is built on the result: buildings,
     // roads and bridges all need to see the carved channel, not the flat
     // satellite surface that hides it.
-    const waterLevels = carveWaterways(world.terrain, world.areas);
+    const water = carveWaterways(world.terrain, world.areas, world.waterways);
     this.groundMeshes = buildGround(
-      world.areas, world.radius, world.seed, world.terrain, waterLevels,
+      world.areas, world.radius, world.seed, world.terrain,
+      water.areaLevels, world.waterways, water.flowLevels,
     );
     this.worldGroup.add(this.groundMeshes.group);
 

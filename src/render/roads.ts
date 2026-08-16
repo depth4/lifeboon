@@ -17,9 +17,10 @@ const LAYER_HEIGHT = 5;
 /**
  * Layer heights above the ground surface.
  *
- * Land cover reaches 0.15 m (render/ground.ts), so the carriageway starts
- * above that and the kerb above the carriageway. The gaps look like nothing
- * from a human viewpoint but keep each surface out of the others' depth noise.
+ * Land cover tops out around 0.175 m (render/ground.ts: its own lift plus up
+ * to three levels of nesting), so the carriageway starts above that and the
+ * kerb above the carriageway. The gaps look like nothing from a human
+ * viewpoint but keep each surface out of the others' depth noise.
  */
 const SURFACE_Y = 0.22;
 const MARKING_Y = 0.26;
@@ -59,7 +60,7 @@ export interface RoadMeshes {
  * Offset a polyline to both sides by `half`, mitring at each interior vertex.
  * Returns left and right edge point lists of the same length as `points`.
  */
-function offsetPolyline(points: Vec2[], half: number): { left: Vec2[]; right: Vec2[] } {
+export function offsetPolyline(points: Vec2[], half: number): { left: Vec2[]; right: Vec2[] } {
   const n = points.length;
   const left: Vec2[] = new Array(n);
   const right: Vec2[] = new Array(n);
@@ -109,7 +110,7 @@ function offsetPolyline(points: Vec2[], half: number): { left: Vec2[]; right: Ve
  * is how a carriageway is actually built. A single scalar height would make
  * every road on a hillside either float or bury itself.
  */
-function emitRibbon(
+export function emitRibbon(
   left: Vec2[],
   right: Vec2[],
   heights: number[],
