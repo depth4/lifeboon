@@ -15,6 +15,7 @@
 import { Rng, hashString } from '../core/rng';
 import { ringArea, ringCentroid } from '../core/geo';
 import { buildingCapacity } from './tags';
+import { syntheticHeightfield } from '../terrain/elevation';
 import type {
   AreaFeature,
   Building,
@@ -326,6 +327,9 @@ export function generateCity(seedText = 'lifeboon', radius = 900): World {
     areas,
     pois,
     audit: null,
+    // Invented landscape for an invented city — it exists so the terrain
+    // pipeline runs without a network, and so the offline city has hills.
+    terrain: syntheticHeightfield(radius, seed),
     radius,
     seed,
     stats: {

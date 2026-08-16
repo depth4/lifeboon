@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import { Rng } from '../core/rng';
 import type { Road, Vec2 } from '../world/types';
+import type { Terrain } from '../terrain/heightfield';
 
 export interface Props {
   group: THREE.Group;
@@ -29,6 +30,7 @@ export function buildProps(
   treeSpots: TreeSpot[],
   roads: Road[],
   seed: number,
+  terrain: Terrain,
   maxTrees = 12000,
 ): Props {
   const group = new THREE.Group();
@@ -57,7 +59,7 @@ export function buildProps(
     const canopies = new THREE.InstancedMesh(canopyGeom, canopyMat, trees.length);
 
     trees.forEach((spot, i) => {
-      dummy.position.set(spot.x, 0, spot.z);
+      dummy.position.set(spot.x, terrain.heightAt(spot.x, spot.z), spot.z);
       dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
       dummy.scale.setScalar(spot.scale);
       dummy.updateMatrix();
@@ -98,7 +100,7 @@ export function buildProps(
     const heads = new THREE.InstancedMesh(headGeom, headMat, lampPositions.length);
 
     lampPositions.forEach((p, i) => {
-      dummy.position.set(p[0], 0, p[1]);
+      dummy.position.set(p[0], terrain.heightAt(p[0], p[1]), p[1]);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.setScalar(1);
       dummy.updateMatrix();

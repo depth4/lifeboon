@@ -19,6 +19,8 @@ import type {
   Vec2,
   World,
 } from '../world/types';
+import type { Terrain } from '../terrain/heightfield';
+import { FlatTerrain } from '../terrain/heightfield';
 import type { OverpassElement, OverpassResponse } from './overpass';
 import {
   areaKind,
@@ -362,6 +364,7 @@ export function parseOsm(
   response: OverpassResponse,
   bbox: BBox,
   placeName: string,
+  terrain: Terrain = new FlatTerrain(),
 ): World {
   const proj = Projection.fromBBox(bbox);
   const acc: Accumulator = {
@@ -402,6 +405,7 @@ export function parseOsm(
     areas: acc.areas,
     pois,
     audit,
+    terrain,
     radius,
     seed: hashString(`${bbox.south.toFixed(4)},${bbox.west.toFixed(4)}`),
     stats: {

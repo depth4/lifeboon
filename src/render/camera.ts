@@ -13,6 +13,8 @@
  */
 
 import * as THREE from 'three';
+import type { Terrain } from '../terrain/heightfield';
+import { FlatTerrain } from '../terrain/heightfield';
 
 export type CameraMode = 'orbit' | 'walk' | 'follow';
 
@@ -49,6 +51,12 @@ export class CameraController {
 
   /** Minimum eye height above the ground for the orbit camera, in metres. */
   groundClearance = 2.4;
+  /** Ground the camera stands on; swapped whenever a new place is loaded. */
+  private terrain: Terrain = new FlatTerrain();
+
+  setTerrain(terrain: Terrain): void {
+    this.terrain = terrain;
+  }
 
   constructor(domElement: HTMLElement, aspect: number) {
     this.domElement = domElement;
@@ -150,11 +158,16 @@ export class CameraController {
     if (mode === this.mode) return;
     if (mode === 'walk') {
       // Step down to where the camera is currently looking.
-      this.walkPos.set(this.target.x, WALK_EYE_HEIGHT, this.target.z);
+      const ground = this.terrain.heightAt(this.target.x, this.target.z);
+      this.walkPos.set(this.target.x, ground + WALK_EYE_HEIGHT, this.target.z);
       this.walkYaw = this.yaw;
       this.walkPitch = -0.05;
     } else if (this.mode === 'walk') {
-      this.target.set(this.walkPos.x, 0, this.walkPos.z);
+      this.target.set(
+        this.walkPos.x,
+        this.terrain.heightAt(this.walkPos.x, this.walkPos.z),
+        this.walkPos.z,
+      );
       this.yaw = this.walkYaw;
       this.targetDistance = Math.max(this.targetDistance, 60);
     }
@@ -162,22 +175,27 @@ export class CameraController {
   }
 
   setFollowPoint(x: number, z: number): void {
-    this.followPoint.set(x, 0, z);
+    this.followPoint.set(x, this.terrain.heightAt(x, z), z);
   }
 
   /** Move the view to a place, keeping the current angle. */
   goTo(x: number, z: number, distance?: number): void {
-    this.target.set(x, 0, z);
-    this.walkPos.set(x, WALK_EYE_HEIGHT, z);
+    const ground = this.terrain.heightAt(x, z);
+    this.target.set(x, ground, z);
+    this.walkPos.set(x, ground + WALK_EYE_HEIGHT, z);
     if (distance !== undefined) {
       this.targetDistance = clamp(distance, MIN_DISTANCE, MAX_DISTANCE);
       this.distance = this.targetDistance;
     }
   }
 
-  /** Metres above ground; used for fog, LOD and the HUD scale readout. */
+  /**
+   * Metres above the ground directly below, not above sea level — on a hill
+   * town the second number tells you nothing useful about how close you are.
+   */
   get altitude(): number {
-    return this.camera.position.y;
+    const ground = this.terrain.heightAt(this.camera.position.x, this.camera.position.z);
+    return Math.max(0, this.camera.position.y - ground);
   }
 
   get currentDistance(): number {
@@ -197,6 +215,9 @@ export class CameraController {
 
     const anchor = this.mode === 'follow' ? this.followPoint : this.target;
     const dist = this.mode === 'follow' ? this.followDistance : this.distance;
+    // Orbit around the ground under the target, not around sea level, or the
+    // camera sinks into a hillside as soon as you pan uphill.
+    anchor.y = this.terrain.heightAt(anchor.x, anchor.z);
 
     // Keyboard panning works in orbit mode too.
     if (this.mode === 'orbit') {
@@ -236,10 +257,16 @@ export class CameraController {
     if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) this.walkPos.addScaledVector(forward, -speed);
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) this.walkPos.addScaledVector(right, -speed);
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) this.walkPos.addScaledVector(right, speed);
-    if (this.keys.has('KeyQ')) this.walkPos.y = Math.max(WALK_EYE_HEIGHT, this.walkPos.y - speed);
+    if (this.keys.has('KeyQ')) this.walkPos.y -= speed;
     if (this.keys.has('KeyE')) this.walkPos.y += speed;
 
-    this.walkPos.y = Math.max(WALK_EYE_HEIGHT, this.walkPos.y);
+    const ground = this.terrain.heightAt(this.walkPos.x, this.walkPos.z);
+    this.walkPos.y = Math.max(ground + WALK_EYE_HEIGHT, this.walkPos.y);
+    // Walking downhill should bring you down with the slope, not leave you
+    // hovering at the height of the last hill you stood on.
+    if (this.walkPos.y > ground + WALK_EYE_HEIGHT + 0.01) {
+      this.walkPos.y += (ground + WALK_EYE_HEIGHT - this.walkPos.y) * Math.min(1, dt * 6);
+    }
     this.camera.position.copy(this.walkPos);
 
     const look = new THREE.Vector3(
@@ -248,7 +275,11 @@ export class CameraController {
       -Math.cos(this.walkYaw) * Math.cos(this.walkPitch),
     );
     this.camera.lookAt(this.walkPos.clone().add(look));
-    this.target.set(this.walkPos.x, 0, this.walkPos.z);
+    this.target.set(
+      this.walkPos.x,
+      this.terrain.heightAt(this.walkPos.x, this.walkPos.z),
+      this.walkPos.z,
+    );
   }
 
   /**

@@ -14,6 +14,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Agent } from '../sim/population';
+import type { Terrain } from '../terrain/heightfield';
+import { FlatTerrain } from '../terrain/heightfield';
 
 const PART_BODY = 0;
 const PART_LEG_L = 1;
@@ -101,6 +103,12 @@ export class PeopleRenderer {
   private readonly instanceAgents: Agent[] = [];
   /** Adaptive cut-off distance used when there are more people than slots. */
   private cullDistance = 4000;
+  /** Ground the crowd stands on. */
+  private terrain: Terrain = new FlatTerrain();
+
+  setTerrain(terrain: Terrain): void {
+    this.terrain = terrain;
+  }
 
   constructor(opts: PeopleRendererOptions = {}) {
     this.maxInstances = opts.maxInstances ?? 5000;
@@ -221,7 +229,10 @@ export class PeopleRenderer {
       if (dx * dx + dz * dz > cullSq) continue;
 
       const walking = agent.path !== null;
-      this.dummy.position.set(agent.x, 0, agent.z);
+      // Sampling per person per frame is a few thousand bilinear lookups —
+      // far cheaper than carrying a height on every nav-graph node and
+      // keeping it in step with the terrain.
+      this.dummy.position.set(agent.x, this.terrain.heightAt(agent.x, agent.z), agent.z);
       this.dummy.rotation.set(0, agent.heading, 0);
       this.dummy.scale.setScalar(agent.age < 14 ? 0.72 + agent.age * 0.02 : 1);
       this.dummy.updateMatrix();

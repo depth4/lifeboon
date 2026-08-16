@@ -12,6 +12,8 @@
 
 import * as THREE from 'three';
 import type { Building, BuildingKind, Vec2 } from '../world/types';
+import type { Terrain } from '../terrain/heightfield';
+import { groundRangeUnder } from '../terrain/heightfield';
 import { facadeTexture, windowLightTexture, TILE_METRES } from './textures';
 
 /** Base wall colours per building type, varied per building. */
@@ -76,7 +78,10 @@ function lerpColor(a: number, b: number, t: number, out: THREE.Color): THREE.Col
   return out.copy(ca).lerp(cb, t);
 }
 
-export function buildBuildingMeshes(buildings: Building[]): BuildingMeshes {
+export function buildBuildingMeshes(
+  buildings: Building[],
+  terrain: Terrain,
+): BuildingMeshes {
   const wallPos: number[] = [];
   const wallUv: number[] = [];
   const wallColor: number[] = [];
@@ -98,8 +103,15 @@ export function buildBuildingMeshes(buildings: Building[]): BuildingMeshes {
     roofScratch.set(roofChoices[Math.floor(b.variation * 13) % roofChoices.length]);
     const rr = roofScratch.r, rg = roofScratch.g, rb = roofScratch.b;
 
-    const y0 = b.minHeight;
-    const y1 = b.height;
+    // Seat the building in the ground. The floor goes at the highest point
+    // under the footprint so it never sinks into the hill, and the walls run
+    // down past the lowest so no gap opens on the downhill side — which is
+    // exactly what a real building on a slope does with its foundations.
+    const ground = groundRangeUnder(b.ring, terrain);
+    const floor = ground.high;
+    const y0 = floor + b.minHeight;
+    const y1 = floor + b.height;
+    const skirt = ground.low - 0.4;
 
     // --- walls, outer ring and any courtyards ---------------------------
     const rings: Vec2[][] = [b.ring, ...b.holes];
@@ -115,15 +127,20 @@ export function buildBuildingMeshes(buildings: Building[]): BuildingMeshes {
 
         const u0 = travelled / TILE_METRES;
         const u1 = (travelled + len) / TILE_METRES;
-        const v0 = y0 / TILE_METRES;
-        const v1 = y1 / TILE_METRES;
+        // Texture from the floor upward, so window rows line up with storeys
+        // regardless of how deep the foundation skirt runs.
+        const v0 = (y0 - floor) / TILE_METRES;
+        const v1 = (y1 - floor) / TILE_METRES;
         travelled += len;
 
         // A = bottom p0, B = bottom p1, C = top p1, D = top p0.
         // (A, C, B) and (A, D, C) wind outward for this ring orientation.
+        // The wall starts at the skirt, below ground, so a sloping site shows
+        // masonry rather than a triangle of daylight.
+        const wallBase = b.minHeight > 0 ? y0 : skirt;
         wallPos.push(
-          p0[0], y0, p0[1], p1[0], y1, p1[1], p1[0], y0, p1[1],
-          p0[0], y0, p0[1], p0[0], y1, p0[1], p1[0], y1, p1[1],
+          p0[0], wallBase, p0[1], p1[0], y1, p1[1], p1[0], wallBase, p1[1],
+          p0[0], wallBase, p0[1], p0[0], y1, p0[1], p1[0], y1, p1[1],
         );
         wallUv.push(u0, v0, u1, v1, u1, v0, u0, v0, u0, v1, u1, v1);
         for (let k = 0; k < 6; k++) wallColor.push(wr, wg, wb);

@@ -8,6 +8,8 @@
 
 import * as THREE from 'three';
 import type { Railway, Road, RoadClass, Vec2 } from '../world/types';
+import type { Terrain } from '../terrain/heightfield';
+import { smoothProfile } from '../terrain/heightfield';
 import { asphaltTexture } from './textures';
 
 /** Height above ground per layer, so bridges clear what they cross. */
@@ -92,11 +94,18 @@ function offsetPolyline(points: Vec2[], half: number): { left: Vec2[]; right: Ve
   return { left, right };
 }
 
-/** Emit a ribbon between two edge lists into position/uv/colour arrays. */
+/**
+ * Emit a ribbon between two edge lists.
+ *
+ * `heights` carries one ground level per polyline vertex, so the ribbon
+ * follows the terrain lengthwise while staying level across its width — which
+ * is how a carriageway is actually built. A single scalar height would make
+ * every road on a hillside either float or bury itself.
+ */
 function emitRibbon(
   left: Vec2[],
   right: Vec2[],
-  y: number,
+  heights: number[],
   color: THREE.Color,
   pos: number[],
   uv: number[],
@@ -106,6 +115,8 @@ function emitRibbon(
   let travelled = 0;
   for (let i = 0; i < left.length - 1; i++) {
     const l0 = left[i], r0 = right[i], l1 = left[i + 1], r1 = right[i + 1];
+    const y0 = heights[i];
+    const y1 = heights[i + 1];
     const segLen = Math.hypot(l1[0] - l0[0], l1[1] - l0[1]);
     const v0 = travelled / uvScale;
     const v1 = (travelled + segLen) / uvScale;
@@ -114,15 +125,44 @@ function emitRibbon(
     // Two triangles wound (left, right-ahead, right) so the face points up.
     // Getting this backwards makes every road vanish under backface culling.
     pos.push(
-      l0[0], y, l0[1], r1[0], y, r1[1], r0[0], y, r0[1],
-      l0[0], y, l0[1], l1[0], y, l1[1], r1[0], y, r1[1],
+      l0[0], y0, l0[1], r1[0], y1, r1[1], r0[0], y0, r0[1],
+      l0[0], y0, l0[1], l1[0], y1, l1[1], r1[0], y1, r1[1],
     );
     uv.push(0, v0, 1, v1, 1, v0, 0, v0, 0, v1, 1, v1);
     for (let k = 0; k < 6; k++) col.push(color.r, color.g, color.b);
   }
 }
 
-export function buildRoadMeshes(roads: Road[]): RoadMeshes {
+/**
+ * The height profile a road actually runs at.
+ *
+ * Roads are engineered, not draped: they cut through humps and fill hollows,
+ * so following the DEM sample-for-sample gives a visibly wobbling ribbon.
+ * We smooth the profile, then clamp how far it may stray from the real ground
+ * so a road on a steep hillside never ends up on stilts or in a trench.
+ */
+function roadProfile(
+  points: Vec2[],
+  terrain: Terrain,
+  lift: number,
+  maxDeviation = 1.5,
+): number[] {
+  const raw = points.map(([x, z]) => terrain.heightAt(x, z));
+  const smoothed = smoothProfile(raw, 3);
+  const out = new Array<number>(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    const drift = Math.max(-maxDeviation, Math.min(maxDeviation, smoothed[i] - raw[i]));
+    out[i] = raw[i] + drift + lift;
+  }
+  return out;
+}
+
+/** Shift a whole profile up, for pavements and markings sitting on the road. */
+function raise(profile: number[], by: number): number[] {
+  return profile.map((h) => h + by);
+}
+
+export function buildRoadMeshes(roads: Road[], terrain: Terrain): RoadMeshes {
   const surfPos: number[] = [];
   const surfUv: number[] = [];
   const surfCol: number[] = [];
@@ -145,9 +185,14 @@ export function buildRoadMeshes(roads: Road[]): RoadMeshes {
     const yBase = road.layer * LAYER_HEIGHT;
     const half = road.width / 2;
 
+    // A bridge deck is level relative to its own layer, not the ground below.
+    const profile = road.bridge || road.layer !== 0
+      ? road.points.map(() => yBase + SURFACE_Y)
+      : roadProfile(road.points, terrain, SURFACE_Y);
+
     const { left, right } = offsetPolyline(road.points, half);
     color.set(SURFACE_COLOR[road.cls]);
-    emitRibbon(left, right, yBase + SURFACE_Y, color, surfPos, surfUv, surfCol, 8);
+    emitRibbon(left, right, profile, color, surfPos, surfUv, surfCol, 8);
 
     // Pavements flank anything cars use; footpaths are already pavement.
     //
@@ -164,17 +209,21 @@ export function buildRoadMeshes(roads: Road[]): RoadMeshes {
 
       // Kerb first: a dark line along the edge of the carriageway is what
       // makes the pavement beside it legible as a separate surface.
-      emitRibbon(kerb.left, left, yBase + PAVEMENT_Y, kerbColor, pavePos, paveUv, paveCol, 2);
-      emitRibbon(right, kerb.right, yBase + PAVEMENT_Y, kerbColor, pavePos, paveUv, paveCol, 2);
+      const paveProfile = raise(profile, PAVEMENT_Y - SURFACE_Y);
+      emitRibbon(kerb.left, left, paveProfile, kerbColor, pavePos, paveUv, paveCol, 2);
+      emitRibbon(right, kerb.right, paveProfile, kerbColor, pavePos, paveUv, paveCol, 2);
 
-      emitRibbon(outer.left, kerb.left, yBase + PAVEMENT_Y, paveColor, pavePos, paveUv, paveCol, 6);
-      emitRibbon(kerb.right, outer.right, yBase + PAVEMENT_Y, paveColor, pavePos, paveUv, paveCol, 6);
+      emitRibbon(outer.left, kerb.left, paveProfile, paveColor, pavePos, paveUv, paveCol, 6);
+      emitRibbon(kerb.right, outer.right, paveProfile, paveColor, pavePos, paveUv, paveCol, 6);
     }
 
     // A dashed centre line on roads big enough to have one.
     if (road.drivable && road.lanes >= 2 && road.width >= 7 && !road.oneway) {
       const centre = offsetPolyline(road.points, 0.16);
-      emitDashedLine(centre.left, centre.right, yBase + MARKING_Y, markColor, markPos, markUv, markCol);
+      emitDashedLine(
+        centre.left, centre.right, raise(profile, MARKING_Y - SURFACE_Y),
+        markColor, markPos, markUv, markCol,
+      );
     }
   }
 
@@ -254,7 +303,7 @@ export function buildRoadMeshes(roads: Road[]): RoadMeshes {
  * because in a small town the line is often the thing that decides which side
  * of it you live on.
  */
-export function buildRailwayMeshes(railways: Railway[]): RoadMeshes {
+export function buildRailwayMeshes(railways: Railway[], terrain: Terrain): RoadMeshes {
   const pos: number[] = [];
   const uv: number[] = [];
   const col: number[] = [];
@@ -271,6 +320,12 @@ export function buildRailwayMeshes(railways: Railway[]): RoadMeshes {
 
     const yBase = line.layer * LAYER_HEIGHT;
     const tracks = Math.max(1, Math.min(6, line.tracks));
+    // Rail tolerates far less gradient than a road, so its profile is smoothed
+    // harder and allowed to stray further from the ground — which is precisely
+    // why real lines run in cuttings and on embankments.
+    const profile = line.bridge || line.layer !== 0
+      ? line.points.map(() => yBase + SURFACE_Y)
+      : roadProfile(line.points, terrain, SURFACE_Y, 4);
 
     // Trams run embedded in the carriageway, not on a ballast bed — laying
     // gravel down the middle of a city street is the wrong picture entirely.
@@ -280,12 +335,12 @@ export function buildRailwayMeshes(railways: Railway[]): RoadMeshes {
       const halfBed = (tracks * TRACK_SPACING) / 2 + 0.8;
       const bed = offsetPolyline(line.points, halfBed);
       const bedColor = line.kind === 'disused' ? sleeperColor : ballastColor;
-      emitRibbon(bed.left, bed.right, yBase + SURFACE_Y, bedColor, pos, uv, col, 4);
+      emitRibbon(bed.left, bed.right, profile, bedColor, pos, uv, col, 4);
     }
 
     // Two rails per track, offset from the line's centre. Embedded tram rail
     // sits just proud of the asphalt; ballasted rail sits on top of the bed.
-    const railY = yBase + (embedded ? MARKING_Y + 0.01 : MARKING_Y);
+    const railY = raise(profile, (embedded ? MARKING_Y + 0.01 : MARKING_Y) - SURFACE_Y);
     const spacing = embedded ? TRACK_GAUGE + 1.2 : TRACK_SPACING;
     for (let t = 0; t < tracks; t++) {
       const centre = (t - (tracks - 1) / 2) * spacing;
@@ -338,7 +393,7 @@ export function buildRailwayMeshes(railways: Railway[]): RoadMeshes {
 function emitDashedLine(
   left: Vec2[],
   right: Vec2[],
-  y: number,
+  heights: number[],
   color: THREE.Color,
   pos: number[],
   uv: number[],
@@ -375,9 +430,13 @@ function emitDashedLine(
           right[i][0] + (right[i + 1][0] - right[i][0]) * b,
           right[i][1] + (right[i + 1][1] - right[i][1]) * b,
         ];
+        // Interpolate the ground height across the dash as well, or paint
+        // floats off the tarmac wherever the street runs downhill.
+        const ya = heights[i] + (heights[i + 1] - heights[i]) * a;
+        const yb = heights[i] + (heights[i + 1] - heights[i]) * b;
         pos.push(
-          l0[0], y, l0[1], r1[0], y, r1[1], r0[0], y, r0[1],
-          l0[0], y, l0[1], l1[0], y, l1[1], r1[0], y, r1[1],
+          l0[0], ya, l0[1], r1[0], yb, r1[1], r0[0], ya, r0[1],
+          l0[0], ya, l0[1], l1[0], yb, l1[1], r1[0], yb, r1[1],
         );
         uv.push(0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1);
         for (let k = 0; k < 6; k++) col.push(color.r, color.g, color.b);

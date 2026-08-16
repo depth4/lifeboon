@@ -1,14 +1,20 @@
 /**
- * Ground: the base plane, and the land-cover polygons (water, parks, woodland,
- * pitches, car parks) painted on top of it.
+ * Ground: the terrain surface, and the land-cover polygons draped over it.
  *
- * Everything is stacked in a few centimetres of height rather than fought over
- * with depth bias alone, which keeps large overlapping polygons stable when the
- * camera pulls back to a few kilometres.
+ * The base is a single mesh whose grid is stretched outwards non-linearly —
+ * roughly 20 m spacing across the loaded city, widening to hundreds of metres
+ * at the horizon. That gives detail where the data actually has any, and a
+ * landscape that runs to the skyline, without a separate skirt mesh and the
+ * cracks that come with one.
+ *
+ * Land cover is draped rather than laid flat: a park triangle spanning a
+ * hillside is subdivided until each piece is small enough to follow the slope,
+ * because a single large flat triangle would cut straight through the hill.
  */
 
 import * as THREE from 'three';
 import type { AreaFeature, AreaKind, Vec2 } from '../world/types';
+import type { Terrain } from '../terrain/heightfield';
 import { groundTexture } from './textures';
 
 const AREA_COLOR: Record<AreaKind, number> = {
@@ -24,13 +30,12 @@ const AREA_COLOR: Record<AreaKind, number> = {
 };
 
 /**
- * Height above the base plane, in metres. Ordering matches the paint priority
- * in data/tags.ts: water is last and therefore highest, so a river is never
- * covered by a landuse polygon that happens to overlap its bank. Everything
- * here stays below the road surface (0.06 m), so bridges read correctly.
+ * Height above the ground surface, in metres. Ordering matches the paint
+ * priority in data/tags.ts. Everything stays below the road surface (0.06 m)
+ * so bridges read correctly; water is handled separately because it is flat.
  */
-const AREA_Y: Record<AreaKind, number> = {
-  water: 0.030,
+const AREA_LIFT: Record<AreaKind, number> = {
+  water: 0.0,
   park: 0.012,
   forest: 0.014,
   grass: 0.010,
@@ -40,6 +45,18 @@ const AREA_Y: Record<AreaKind, number> = {
   parking: 0.018,
   pavement: 0.022,
 };
+
+/** Ground colours blended by steepness: turf on the flat, bare earth on slopes. */
+const FLAT_GROUND = new THREE.Color(0x8a9166);
+const STEEP_GROUND = new THREE.Color(0x8a7a63);
+const CLIFF_GROUND = new THREE.Color(0x7d756c);
+
+/** Grid resolution of the base mesh, per side. */
+const BASE_GRID = 168;
+/** How far past the loaded area the stretched grid reaches, as a multiple. */
+const HORIZON_FACTOR = 5;
+/** Subdivide a draped triangle until its edges are shorter than this. */
+const DRAPE_MAX_EDGE_M = 45;
 
 export interface GroundMeshes {
   group: THREE.Group;
@@ -60,31 +77,103 @@ function triangulate(ring: Vec2[], holes: Vec2[][]): { flat: THREE.Vector2[]; fa
   }
 }
 
-export function buildGround(areas: AreaFeature[], radius: number, seed: number): GroundMeshes {
+/**
+ * Non-linear grid position: near the centre this is close to `u * radius`,
+ * and it accelerates towards the horizon so the far field costs almost
+ * nothing. Monotonic over [-1, 1], so the grid never folds back on itself.
+ */
+function stretch(u: number, radius: number): number {
+  return radius * (u + u * u * u * u * u * (HORIZON_FACTOR - 1));
+}
+
+export function buildGround(
+  areas: AreaFeature[],
+  radius: number,
+  seed: number,
+  terrain: Terrain,
+): GroundMeshes {
   const group = new THREE.Group();
   group.name = 'ground';
 
   const texture = groundTexture();
   texture.repeat.set(radius / 6, radius / 6);
 
-  // --- base plane -------------------------------------------------------
-  // Generously oversized so the horizon never shows an edge.
-  const baseSize = radius * 6;
-  const baseGeom = new THREE.PlaneGeometry(baseSize, baseSize);
-  baseGeom.rotateX(-Math.PI / 2);
+  const geoms: THREE.BufferGeometry[] = [];
+  const mats: THREE.Material[] = [];
+
+  /* --------------------------------------------------- the terrain surface */
+  const cells = BASE_GRID;
+  const verts = cells + 1;
+  const positions = new Float32Array(verts * verts * 3);
+  const colors = new Float32Array(verts * verts * 3);
+  const uvs = new Float32Array(verts * verts * 2);
+  const scratch = new THREE.Color();
+
+  for (let r = 0; r < verts; r++) {
+    const v = (r / cells) * 2 - 1;
+    const z = stretch(v, radius);
+    for (let c = 0; c < verts; c++) {
+      const u = (c / cells) * 2 - 1;
+      const x = stretch(u, radius);
+      const i = r * verts + c;
+
+      const h = terrain.heightAt(x, z);
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = h;
+      positions[i * 3 + 2] = z;
+
+      // Steepness decides the surface: grass, then earth, then bare rock.
+      const slope = terrain.slopeAt(x, z);
+      scratch.copy(FLAT_GROUND);
+      if (slope > 0.08) {
+        scratch.lerp(STEEP_GROUND, Math.min(1, (slope - 0.08) / 0.22));
+      }
+      if (slope > 0.32) {
+        scratch.lerp(CLIFF_GROUND, Math.min(1, (slope - 0.32) / 0.4));
+      }
+      colors[i * 3] = scratch.r;
+      colors[i * 3 + 1] = scratch.g;
+      colors[i * 3 + 2] = scratch.b;
+
+      uvs[i * 2] = x / 40;
+      uvs[i * 2 + 1] = z / 40;
+    }
+  }
+
+  const indices: number[] = [];
+  for (let r = 0; r < cells; r++) {
+    for (let c = 0; c < cells; c++) {
+      const a = r * verts + c;
+      const b = a + 1;
+      const d = a + verts;
+      const e = d + 1;
+      // Wound so the surface faces up.
+      indices.push(a, d, b, b, d, e);
+    }
+  }
+
+  const baseGeom = new THREE.BufferGeometry();
+  baseGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  baseGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  baseGeom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  baseGeom.setIndex(indices);
+  baseGeom.computeVertexNormals();
+  baseGeom.computeBoundingSphere();
+
   const baseMat = new THREE.MeshStandardMaterial({
-    color: 0x9a9689,
     map: texture,
+    vertexColors: true,
     roughness: 1,
     metalness: 0,
   });
   const base = new THREE.Mesh(baseGeom, baseMat);
-  base.position.y = -0.02;
   base.receiveShadow = true;
   base.name = 'ground:base';
   group.add(base);
+  geoms.push(baseGeom);
+  mats.push(baseMat);
 
-  // --- land cover -------------------------------------------------------
+  /* ------------------------------------------------------------ land cover */
   const landPos: number[] = [];
   const landCol: number[] = [];
   const waterPos: number[] = [];
@@ -100,9 +189,13 @@ export function buildGround(areas: AreaFeature[], radius: number, seed: number):
   for (const area of areas) {
     const tri = triangulate(area.ring, area.holes);
     if (!tri) continue;
-    const y = AREA_Y[area.kind];
     const isWater = area.kind === 'water';
     color.set(AREA_COLOR[area.kind]);
+    const lift = AREA_LIFT[area.kind];
+
+    // Standing water is level. Its surface sits at the lowest ground around
+    // its edge, which is where the bank meets it.
+    const waterLevel = isWater ? lowestUnder(area.ring, terrain) : 0;
 
     for (const face of tri.faces) {
       const a = tri.flat[face[0]];
@@ -112,13 +205,15 @@ export function buildGround(areas: AreaFeature[], radius: number, seed: number):
 
       // Wind so the face points up.
       const ny = (b.y - a.y) * (c.x - a.x) - (b.x - a.x) * (c.y - a.y);
-      const target = isWater ? waterPos : landPos;
-      if (ny < 0) {
-        target.push(a.x, y, a.y, c.x, y, c.y, b.x, y, b.y);
+      const p0: Vec2 = [a.x, a.y];
+      const p1: Vec2 = ny < 0 ? [c.x, c.y] : [b.x, b.y];
+      const p2: Vec2 = ny < 0 ? [b.x, b.y] : [c.x, c.y];
+
+      if (isWater) {
+        waterPos.push(p0[0], waterLevel, p0[1], p1[0], waterLevel, p1[1], p2[0], waterLevel, p2[1]);
       } else {
-        target.push(a.x, y, a.y, b.x, y, b.y, c.x, y, c.y);
+        drapeTriangle(p0, p1, p2, terrain, lift, landPos, landCol, color, 0);
       }
-      if (!isWater) for (let k = 0; k < 3; k++) landCol.push(color.r, color.g, color.b);
     }
 
     // Scatter trees through green space, denser in woodland.
@@ -126,9 +221,6 @@ export function buildGround(areas: AreaFeature[], radius: number, seed: number):
       scatterTrees(area, area.kind === 'forest' ? 0.006 : 0.0016, rand, treeSpots);
     }
   }
-
-  const geoms: THREE.BufferGeometry[] = [baseGeom];
-  const mats: THREE.Material[] = [baseMat];
 
   if (landPos.length) {
     const geom = new THREE.BufferGeometry();
@@ -181,6 +273,56 @@ export function buildGround(areas: AreaFeature[], radius: number, seed: number):
       texture.dispose();
     },
   };
+}
+
+/**
+ * Emit a triangle that follows the ground, splitting it until every edge is
+ * short enough that the flat piece hugs the slope. Depth is bounded so a
+ * pathological polygon cannot explode the vertex count.
+ */
+function drapeTriangle(
+  a: Vec2,
+  b: Vec2,
+  c: Vec2,
+  terrain: Terrain,
+  lift: number,
+  pos: number[],
+  col: number[],
+  color: THREE.Color,
+  depth: number,
+): void {
+  const longest = Math.max(
+    Math.hypot(b[0] - a[0], b[1] - a[1]),
+    Math.hypot(c[0] - b[0], c[1] - b[1]),
+    Math.hypot(a[0] - c[0], a[1] - c[1]),
+  );
+
+  if (longest > DRAPE_MAX_EDGE_M && depth < 5) {
+    const ab: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const bc: Vec2 = [(b[0] + c[0]) / 2, (b[1] + c[1]) / 2];
+    const ca: Vec2 = [(c[0] + a[0]) / 2, (c[1] + a[1]) / 2];
+    drapeTriangle(a, ab, ca, terrain, lift, pos, col, color, depth + 1);
+    drapeTriangle(ab, b, bc, terrain, lift, pos, col, color, depth + 1);
+    drapeTriangle(ca, bc, c, terrain, lift, pos, col, color, depth + 1);
+    drapeTriangle(ab, bc, ca, terrain, lift, pos, col, color, depth + 1);
+    return;
+  }
+
+  pos.push(
+    a[0], terrain.heightAt(a[0], a[1]) + lift, a[1],
+    b[0], terrain.heightAt(b[0], b[1]) + lift, b[1],
+    c[0], terrain.heightAt(c[0], c[1]) + lift, c[1],
+  );
+  for (let k = 0; k < 3; k++) col.push(color.r, color.g, color.b);
+}
+
+function lowestUnder(ring: Vec2[], terrain: Terrain): number {
+  let min = Infinity;
+  for (const [x, z] of ring) {
+    const h = terrain.heightAt(x, z);
+    if (h < min) min = h;
+  }
+  return isFinite(min) ? min : 0;
 }
 
 /** Rejection-sample points inside a polygon at the given density per m². */

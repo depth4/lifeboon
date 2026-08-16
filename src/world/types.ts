@@ -7,6 +7,8 @@
  * (see core/geo.ts): [x = east, z = south].
  */
 
+import type { Terrain } from '../terrain/heightfield';
+
 export type Vec2 = [number, number];
 
 export type BuildingKind =
@@ -200,6 +202,8 @@ export interface World {
   pois: Poi[];
   /** Null for the generated offline city, which has nothing to audit. */
   audit: DataAudit | null;
+  /** Ground surface. FlatTerrain when no elevation data could be loaded. */
+  terrain: Terrain;
   /** Half-extent of the loaded area in metres, used to size ground and fog. */
   radius: number;
   stats: WorldStats;

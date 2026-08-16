@@ -14,6 +14,8 @@ import type { LatLon } from './core/geo';
 import { fetchArea, geocode, OverpassError } from './data/overpass';
 import { parseOsm } from './data/osm';
 import { generateCity } from './data/procedural';
+import { fetchHeightfield } from './terrain/elevation';
+import { FlatTerrain } from './terrain/heightfield';
 import { NavGraph } from './sim/navgraph';
 import { Population, type Agent } from './sim/population';
 import { SceneRig } from './render/scene';
@@ -151,13 +153,17 @@ class App {
 
     try {
       const bbox = bboxAround(centre, radiusM);
-      const response = await fetchArea(bbox, {
-        onProgress: (msg) => this.hud.setLoading(msg, 0.25),
-      });
+      // Map and elevation come from unrelated services, so fetch them at the
+      // same time. Terrain is the optional half: if it fails we still get a
+      // city, just a flat one.
+      const [response, terrain] = await Promise.all([
+        fetchArea(bbox, { onProgress: (msg) => this.hud.setLoading(msg, 0.25) }),
+        fetchHeightfield(bbox).catch(() => new FlatTerrain()),
+      ]);
 
       this.hud.setLoading('Reading footprints and streets…', 0.5);
       await nextFrame();
-      const world = parseOsm(response, bbox, name);
+      const world = parseOsm(response, bbox, name, terrain);
 
       if (!world.buildings.length && !world.roads.length) {
         throw new OverpassError('That area has no mapped buildings or streets yet.');
@@ -176,31 +182,33 @@ class App {
 
     this.world = world;
     this.hud.setWorld(world);
+    this.cameras.setTerrain(world.terrain);
+    this.people.setTerrain(world.terrain);
     this.selected = null;
     this.hud.hideInspector();
 
     this.hud.setLoading('Laying out the ground…', 0.6);
     await nextFrame();
-    this.groundMeshes = buildGround(world.areas, world.radius, world.seed);
+    this.groundMeshes = buildGround(world.areas, world.radius, world.seed, world.terrain);
     this.worldGroup.add(this.groundMeshes.group);
 
     this.hud.setLoading('Paving the streets…', 0.7);
     await nextFrame();
-    this.roadMeshes = buildRoadMeshes(world.roads);
+    this.roadMeshes = buildRoadMeshes(world.roads, world.terrain);
     this.worldGroup.add(this.roadMeshes.group);
 
-    this.railMeshes = buildRailwayMeshes(world.railways);
+    this.railMeshes = buildRailwayMeshes(world.railways, world.terrain);
     this.worldGroup.add(this.railMeshes.group);
 
     this.hud.setLoading(`Raising ${world.stats.buildings.toLocaleString()} buildings…`, 0.8);
     await nextFrame();
-    this.buildingMeshes = buildBuildingMeshes(world.buildings);
+    this.buildingMeshes = buildBuildingMeshes(world.buildings, world.terrain);
     this.worldGroup.add(this.buildingMeshes.walls, this.buildingMeshes.roofs);
     this.buildingIndex = new BuildingIndex(world.buildings);
 
     this.hud.setLoading('Planting trees, hanging lamps…', 0.87);
     await nextFrame();
-    this.props = buildProps(this.groundMeshes.treeSpots, world.roads, world.seed);
+    this.props = buildProps(this.groundMeshes.treeSpots, world.roads, world.seed, world.terrain);
     this.worldGroup.add(this.props.group);
 
     this.hud.setLoading('Mapping walkable routes…', 0.92);
