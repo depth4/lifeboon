@@ -17,14 +17,15 @@ const LAYER_HEIGHT = 5;
 /**
  * Layer heights above the ground surface.
  *
- * Land cover tops out around 0.175 m (render/ground.ts: its own lift plus up
- * to three levels of nesting), so the carriageway starts above that and the
- * kerb above the carriageway. The gaps look like nothing from a human
- * viewpoint but keep each surface out of the others' depth noise.
+ * Land cover tops out at 0.21 m (render/ground.ts: its own lift plus up to
+ * three levels of nesting), so the carriageway starts above that and the kerb
+ * above the carriageway. Against land cover the kerb stands 17 cm proud, which
+ * is about right; against bare ground it is more, which is the price of
+ * keeping every surface out of the others' depth noise.
  */
-const SURFACE_Y = 0.22;
-const MARKING_Y = 0.26;
-const PAVEMENT_Y = 0.34;
+const SURFACE_Y = 0.28;
+const MARKING_Y = 0.31;
+const PAVEMENT_Y = 0.38;
 /** Width of the kerb strip that separates carriageway from pavement. */
 const KERB_WIDTH = 0.3;
 

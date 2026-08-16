@@ -42,14 +42,14 @@ const AREA_COLOR: Record<AreaKind, number> = {
  */
 const AREA_LIFT: Record<AreaKind, number> = {
   water: 0.0,
-  park: 0.05,
-  forest: 0.05,
-  grass: 0.04,
-  sand: 0.06,
-  pitch: 0.07,
-  cemetery: 0.05,
-  parking: 0.06,
-  pavement: 0.07,
+  park: 0.07,
+  forest: 0.07,
+  grass: 0.06,
+  sand: 0.08,
+  pitch: 0.09,
+  cemetery: 0.07,
+  parking: 0.08,
+  pavement: 0.09,
 };
 
 /**
@@ -62,7 +62,7 @@ const AREA_LIFT: Record<AreaKind, number> = {
  * each one cleanly above whatever contains it, and nesting is rarely more than
  * two or three deep, so the stack stays shallow enough to pass under the road.
  */
-const NESTING_STEP = 0.035;
+const NESTING_STEP = 0.04;
 const MAX_NESTING = 3;
 
 /** Ground colours blended by steepness: turf on the flat, bare earth on slopes. */
@@ -71,15 +71,26 @@ const STEEP_GROUND = new THREE.Color(0x8a7a63);
 const CLIFF_GROUND = new THREE.Color(0x7d756c);
 
 /** Grid resolution of the base mesh, per side. */
-const BASE_GRID = 168;
+const BASE_GRID = 208;
 /** How far past the loaded area the stretched grid reaches, as a multiple. */
 const HORIZON_FACTOR = 5;
+/**
+ * Share of the grid spent on the loaded area itself.
+ *
+ * The rest runs out to the horizon. Getting this wrong is what caused stable
+ * z-fighting across the outer half of every city: the old curve widened
+ * smoothly from the centre, so by 750 m out the ground was made of 40 m
+ * facets and by 1300 m of 200 m facets, while land cover was subdivided to
+ * 16 m and hugged the real surface. A flat 200 m triangle misses real terrain
+ * by metres, so the two surfaces crossed each other again and again.
+ */
+const CORE_FRACTION = 0.72;
 /**
  * Subdivide a draped triangle until its edges are shorter than this. It must
  * be finer than the terrain grid (20 m), or a land-cover triangle spans a
  * whole terrain cell and cuts through the surface it is supposed to lie on.
  */
-const DRAPE_MAX_EDGE_M = 16;
+const DRAPE_MAX_EDGE_M = 12;
 
 export interface GroundMeshes {
   group: THREE.Group;
@@ -101,12 +112,20 @@ function triangulate(ring: Vec2[], holes: Vec2[][]): { flat: THREE.Vector2[]; fa
 }
 
 /**
- * Non-linear grid position: near the centre this is close to `u * radius`,
- * and it accelerates towards the horizon so the far field costs almost
- * nothing. Monotonic over [-1, 1], so the grid never folds back on itself.
+ * Grid position along one axis.
+ *
+ * Uniform across the loaded area, at a spacing matched to the elevation data,
+ * so the ground is exactly as detailed as the data it is drawn from. Only
+ * beyond the data — where the heightfield clamps and we are extrapolating
+ * anyway — does spacing widen, and there it widens fast so the horizon costs
+ * almost nothing. Monotonic over [-1, 1], so the grid never folds back.
  */
 function stretch(u: number, radius: number): number {
-  return radius * (u + u * u * u * u * u * (HORIZON_FACTOR - 1));
+  const a = Math.abs(u);
+  const sign = u < 0 ? -1 : 1;
+  if (a <= CORE_FRACTION) return sign * (a / CORE_FRACTION) * radius;
+  const t = (a - CORE_FRACTION) / (1 - CORE_FRACTION);
+  return sign * radius * (1 + t * (HORIZON_FACTOR - 1) * (0.3 + 0.7 * t));
 }
 
 /**
