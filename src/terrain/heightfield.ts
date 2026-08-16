@@ -44,9 +44,24 @@ export class FlatTerrain implements Terrain {
 }
 
 export class Heightfield implements Terrain {
-  readonly minHeight: number;
-  readonly maxHeight: number;
-  readonly hasRelief: boolean;
+  private low = 0;
+  private high = 0;
+
+  get minHeight(): number {
+    return this.low;
+  }
+
+  get maxHeight(): number {
+    return this.high;
+  }
+
+  /**
+   * Below about three metres across a whole district the "relief" is DEM
+   * noise rather than landscape, and rendering it just makes roads wobble.
+   */
+  get hasRelief(): boolean {
+    return this.high - this.low >= 3;
+  }
 
   /**
    * @param data    row-major samples, `cols * rows`, in metres
@@ -62,17 +77,7 @@ export class Heightfield implements Terrain {
     private readonly originZ: number,
     readonly resolution: number,
   ) {
-    let min = Infinity;
-    let max = -Infinity;
-    for (let i = 0; i < data.length; i++) {
-      if (data[i] < min) min = data[i];
-      if (data[i] > max) max = data[i];
-    }
-    this.minHeight = min;
-    this.maxHeight = max;
-    // Below about three metres across a whole district, the "relief" is DEM
-    // noise rather than landscape, and rendering it just makes roads wobble.
-    this.hasRelief = max - min >= 3;
+    this.recomputeBounds();
   }
 
   /** Bilinear sample, clamped to the edge outside the loaded area. */
@@ -109,6 +114,61 @@ export class Heightfield implements Terrain {
   }
 
   /**
+   * Cut a channel through the surface.
+   *
+   * Satellite elevation does not resolve a river bed: at 20-30 m per sample the
+   * ground inside a waterway reads at roughly bank level, so a water surface
+   * laid at the level of its banks ends up buried by the terrain around it.
+   * Lowering the samples inside the polygon is what makes the water visible —
+   * and it is also closer to the truth, because there really is a channel there.
+   *
+   * Only ever lowers, so a valley the data did capture is left alone.
+   */
+  carveTo(ring: Array<[number, number]>, level: number): boolean {
+    if (ring.length < 3) return false;
+
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const [x, z] of ring) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+
+    const c0 = Math.max(0, Math.floor((minX - this.originX) / this.resolution) - 1);
+    const c1 = Math.min(this.cols - 1, Math.ceil((maxX - this.originX) / this.resolution) + 1);
+    const r0 = Math.max(0, Math.floor((minZ - this.originZ) / this.resolution) - 1);
+    const r1 = Math.min(this.rows - 1, Math.ceil((maxZ - this.originZ) / this.resolution) + 1);
+
+    let changed = false;
+    for (let r = r0; r <= r1; r++) {
+      const z = this.originZ + r * this.resolution;
+      for (let c = c0; c <= c1; c++) {
+        const x = this.originX + c * this.resolution;
+        if (!pointInRing(x, z, ring)) continue;
+        const i = r * this.cols + c;
+        if (this.data[i] > level) {
+          this.data[i] = level;
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
+  /** Call after carving; the stored bounds are otherwise stale. */
+  recomputeBounds(): void {
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < this.data.length; i++) {
+      if (this.data[i] < min) min = this.data[i];
+      if (this.data[i] > max) max = this.data[i];
+    }
+    this.low = isFinite(min) ? min : 0;
+    this.high = isFinite(max) ? max : 0;
+  }
+
+  /**
    * Lowest ground under a set of points.
    *
    * This is what seats a building: a footprint on a slope has to start at the
@@ -142,6 +202,17 @@ export function groundRangeUnder(
   }
   if (!isFinite(low)) return { low: 0, high: 0 };
   return { low, high };
+}
+
+/** Ray-casting point-in-polygon, on raw coordinates. */
+function pointInRing(x: number, z: number, ring: Array<[number, number]>): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], zi = ring[i][1];
+    const xj = ring[j][0], zj = ring[j][1];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
 }
 
 /**

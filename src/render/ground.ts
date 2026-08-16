@@ -30,20 +30,25 @@ const AREA_COLOR: Record<AreaKind, number> = {
 };
 
 /**
- * Height above the ground surface, in metres. Ordering matches the paint
- * priority in data/tags.ts. Everything stays below the road surface (0.06 m)
- * so bridges read correctly; water is handled separately because it is flat.
+ * Height above the ground surface, in metres.
+ *
+ * These used to be one or two centimetres, which is far inside the depth
+ * buffer's error at city viewing distances — the land cover and the terrain
+ * underneath fought for the same pixels and flickered. Ten to fifteen
+ * centimetres is invisible to the eye at any distance you would actually look
+ * from, and comfortably outside the precision the surfaces are resolved at.
+ * Everything here stays below the road surface so kerbs still read correctly.
  */
 const AREA_LIFT: Record<AreaKind, number> = {
   water: 0.0,
-  park: 0.012,
-  forest: 0.014,
-  grass: 0.010,
-  sand: 0.016,
-  pitch: 0.020,
-  cemetery: 0.014,
-  parking: 0.018,
-  pavement: 0.022,
+  park: 0.10,
+  forest: 0.11,
+  grass: 0.09,
+  sand: 0.12,
+  pitch: 0.14,
+  cemetery: 0.11,
+  parking: 0.13,
+  pavement: 0.15,
 };
 
 /** Ground colours blended by steepness: turf on the flat, bare earth on slopes. */
@@ -55,8 +60,12 @@ const CLIFF_GROUND = new THREE.Color(0x7d756c);
 const BASE_GRID = 168;
 /** How far past the loaded area the stretched grid reaches, as a multiple. */
 const HORIZON_FACTOR = 5;
-/** Subdivide a draped triangle until its edges are shorter than this. */
-const DRAPE_MAX_EDGE_M = 45;
+/**
+ * Subdivide a draped triangle until its edges are shorter than this. It must
+ * be finer than the terrain grid (20 m), or a land-cover triangle spans a
+ * whole terrain cell and cuts through the surface it is supposed to lie on.
+ */
+const DRAPE_MAX_EDGE_M = 16;
 
 export interface GroundMeshes {
   group: THREE.Group;
@@ -91,6 +100,7 @@ export function buildGround(
   radius: number,
   seed: number,
   terrain: Terrain,
+  waterLevels: Map<string, number> = new Map(),
 ): GroundMeshes {
   const group = new THREE.Group();
   group.name = 'ground';
@@ -193,9 +203,12 @@ export function buildGround(
     color.set(AREA_COLOR[area.kind]);
     const lift = AREA_LIFT[area.kind];
 
-    // Standing water is level. Its surface sits at the lowest ground around
-    // its edge, which is where the bank meets it.
-    const waterLevel = isWater ? lowestUnder(area.ring, terrain) : 0;
+    // Standing water is level, and its surface goes exactly where the bed was
+    // carved for it — recomputing it here from the now-carved terrain would
+    // put it at the bottom of the channel instead of at the bank.
+    const waterLevel = isWater
+      ? waterLevels.get(area.id) ?? lowestUnder(area.ring, terrain)
+      : 0;
 
     for (const face of tri.faces) {
       const a = tri.flat[face[0]];
@@ -297,7 +310,7 @@ function drapeTriangle(
     Math.hypot(a[0] - c[0], a[1] - c[1]),
   );
 
-  if (longest > DRAPE_MAX_EDGE_M && depth < 5) {
+  if (longest > DRAPE_MAX_EDGE_M && depth < 6) {
     const ab: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
     const bc: Vec2 = [(b[0] + c[0]) / 2, (b[1] + c[1]) / 2];
     const ca: Vec2 = [(c[0] + a[0]) / 2, (c[1] + a[1]) / 2];

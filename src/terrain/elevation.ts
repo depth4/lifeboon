@@ -13,7 +13,9 @@
 
 import type { BBox } from '../core/geo';
 import { Projection } from '../core/geo';
+import type { AreaFeature } from '../world/types';
 import { Heightfield } from './heightfield';
+import type { Terrain } from './heightfield';
 
 const TILE_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
 const TILE_SIZE = 256;
@@ -242,4 +244,45 @@ export function syntheticHeightfield(radius: number, seed: number): Heightfield 
   for (let i = 0; i < data.length; i++) data[i] -= centre;
 
   return new Heightfield(data, cols, rows, -radius, -radius, spacing);
+}
+
+
+/**
+ * Cut river and lake beds into the terrain.
+ *
+ * Satellite elevation does not see under water: at 20-30 m per sample a river
+ * reads at roughly the height of its own banks. Laying a flat water surface at
+ * that level leaves it buried by the surrounding grid, which is why water
+ * shows only in the few places the data happens to dip. Carving the channel
+ * fixes the picture and is also closer to the truth — there is a channel there.
+ *
+ * Returns the surface level chosen for each water feature, keyed by id, so the
+ * renderer draws the water exactly where the bed was cut.
+ */
+export function carveWaterways(
+  terrain: Terrain,
+  areas: AreaFeature[],
+): Map<string, number> {
+  const levels = new Map<string, number>();
+  if (!(terrain instanceof Heightfield)) return levels;
+
+  for (const area of areas) {
+    if (area.kind !== 'water' || area.ring.length < 3) continue;
+
+    // The bank is the honest reference: the lowest ground around the outline.
+    let level = Infinity;
+    for (const [x, z] of area.ring) {
+      const h = terrain.heightAt(x, z);
+      if (h < level) level = h;
+    }
+    if (!isFinite(level)) continue;
+
+    // Sink the bed slightly below the surface so the water reads as water
+    // rather than as a decal fighting the ground for the same pixels.
+    terrain.carveTo(area.ring, level - 1.2);
+    levels.set(area.id, level);
+  }
+
+  if (levels.size) terrain.recomputeBounds();
+  return levels;
 }

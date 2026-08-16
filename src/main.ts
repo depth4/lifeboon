@@ -14,7 +14,7 @@ import type { LatLon } from './core/geo';
 import { fetchArea, geocode, OverpassError } from './data/overpass';
 import { parseOsm } from './data/osm';
 import { generateCity } from './data/procedural';
-import { fetchHeightfield } from './terrain/elevation';
+import { carveWaterways, fetchHeightfield } from './terrain/elevation';
 import { FlatTerrain } from './terrain/heightfield';
 import { NavGraph } from './sim/navgraph';
 import { Population, type Agent } from './sim/population';
@@ -189,7 +189,13 @@ class App {
 
     this.hud.setLoading('Laying out the ground…', 0.6);
     await nextFrame();
-    this.groundMeshes = buildGround(world.areas, world.radius, world.seed, world.terrain);
+    // Cut the river beds before anything is built on the result: buildings,
+    // roads and bridges all need to see the carved channel, not the flat
+    // satellite surface that hides it.
+    const waterLevels = carveWaterways(world.terrain, world.areas);
+    this.groundMeshes = buildGround(
+      world.areas, world.radius, world.seed, world.terrain, waterLevels,
+    );
     this.worldGroup.add(this.groundMeshes.group);
 
     this.hud.setLoading('Paving the streets…', 0.7);
