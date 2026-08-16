@@ -115,8 +115,21 @@ async function cachePut(key: string, data: OverpassResponse): Promise<void> {
   });
 }
 
+/**
+ * Bump whenever buildQuery changes what it asks for.
+ *
+ * Without this the cache key is just the bounding box, so a browser that
+ * fetched an area under an older query replays that stale answer through the
+ * new parser — and whatever was newly added silently reads as zero. That is
+ * exactly how railways came back as 0.0 km for a town that plainly has one.
+ *
+ * v2: added railways and pedestrian crossings.
+ */
+const QUERY_VERSION = 2;
+
 function cacheKey(bbox: BBox): string {
-  return [bbox.south, bbox.west, bbox.north, bbox.east].map((v) => v.toFixed(5)).join(',');
+  const box = [bbox.south, bbox.west, bbox.north, bbox.east].map((v) => v.toFixed(5)).join(',');
+  return `v${QUERY_VERSION}:${box}`;
 }
 
 /* ----------------------------------------------------------------- fetch */

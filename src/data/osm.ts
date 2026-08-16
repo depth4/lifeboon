@@ -461,8 +461,15 @@ function buildAudit(acc: Accumulator, poisTotal: number): DataAudit {
     }
   }
 
-  const railwayKm =
-    acc.railways.reduce((sum, r) => sum + polylineLength(r.points), 0) / 1000;
+  // Trams are reported separately: in a city with a tram network they
+  // dominate the total, and reading that as "100 km of railway" is misleading.
+  let railwayKm = 0;
+  let tramKm = 0;
+  for (const line of acc.railways) {
+    const km = polylineLength(line.points) / 1000;
+    if (line.kind === 'tram') tramKm += km;
+    else railwayKm += km;
+  }
 
   return {
     buildingsTotal: acc.buildings.length,
@@ -478,6 +485,7 @@ function buildAudit(acc: Accumulator, poisTotal: number): DataAudit {
     sidewalkNo,
     crossings: acc.crossingNodes + crossingWays,
     railwayKm,
+    tramKm,
     poisTotal,
   };
 }

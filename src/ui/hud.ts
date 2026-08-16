@@ -165,6 +165,7 @@ export class Hud {
 
         <h4>Other</h4>
         ${auditRow('Railway', `${audit.railwayKm.toFixed(1)} km`)}
+        ${auditRow('Tram track', `${audit.tramKm.toFixed(1)} km`)}
         ${auditRow('Places (shops, schools, cafes…)', audit.poisTotal.toLocaleString())}
       </div>
       <p class="fineprint">

@@ -271,22 +271,30 @@ export function buildRailwayMeshes(railways: Railway[]): RoadMeshes {
 
     const yBase = line.layer * LAYER_HEIGHT;
     const tracks = Math.max(1, Math.min(6, line.tracks));
-    const halfBed = (tracks * TRACK_SPACING) / 2 + 0.8;
 
-    // Ballast bed.
-    const bed = offsetPolyline(line.points, halfBed);
-    const bedColor = line.kind === 'disused' ? sleeperColor : ballastColor;
-    emitRibbon(bed.left, bed.right, yBase + SURFACE_Y, bedColor, pos, uv, col, 4);
+    // Trams run embedded in the carriageway, not on a ballast bed — laying
+    // gravel down the middle of a city street is the wrong picture entirely.
+    // Only heavy rail gets ballast.
+    const embedded = line.kind === 'tram';
+    if (!embedded) {
+      const halfBed = (tracks * TRACK_SPACING) / 2 + 0.8;
+      const bed = offsetPolyline(line.points, halfBed);
+      const bedColor = line.kind === 'disused' ? sleeperColor : ballastColor;
+      emitRibbon(bed.left, bed.right, yBase + SURFACE_Y, bedColor, pos, uv, col, 4);
+    }
 
-    // Two rails per track, offset from the line's centre.
+    // Two rails per track, offset from the line's centre. Embedded tram rail
+    // sits just proud of the asphalt; ballasted rail sits on top of the bed.
+    const railY = yBase + (embedded ? MARKING_Y + 0.01 : MARKING_Y);
+    const spacing = embedded ? TRACK_GAUGE + 1.2 : TRACK_SPACING;
     for (let t = 0; t < tracks; t++) {
-      const centre = (t - (tracks - 1) / 2) * TRACK_SPACING;
+      const centre = (t - (tracks - 1) / 2) * spacing;
       for (const side of [-1, 1]) {
         const railCentre = centre + (side * TRACK_GAUGE) / 2;
         // A rail head is ~7 cm wide; widen it so it survives at distance.
         const inner = offsetPolyline(line.points, railCentre - 0.09);
         const outer = offsetPolyline(line.points, railCentre + 0.09);
-        emitRibbon(inner.right, outer.right, yBase + MARKING_Y, railColor, pos, uv, col, 4);
+        emitRibbon(inner.right, outer.right, railY, railColor, pos, uv, col, 4);
       }
     }
   }

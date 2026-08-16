@@ -126,7 +126,10 @@ export interface DataAudit {
   sidewalkNo: number;
 
   crossings: number;
+  /** Heavy rail, light rail and disused track. */
   railwayKm: number;
+  /** Tram, counted apart: it is street running, not a railway corridor. */
+  tramKm: number;
   poisTotal: number;
 }
 
