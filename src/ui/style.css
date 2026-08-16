@@ -305,6 +305,102 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* -------------------------------------------------------------- drive */
+
+/*
+ * Sits above the attribution strip, which also lives at the bottom centre.
+ * The attribution is a licence condition, so the dashboard moves, not it.
+ */
+.panel-drive {
+  left: 50%;
+  bottom: 58px;
+  transform: translateX(-50%);
+  min-width: 290px;
+  text-align: center;
+}
+
+.drive-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 14px;
+}
+
+.drive-speed {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.drive-speed small {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 5px;
+}
+
+.drive-gear {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 34px;
+  padding: 3px 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--accent-dim);
+}
+
+/* Rev counter. The redline mark is where the fuel actually gets cut. */
+.rev {
+  position: relative;
+  height: 5px;
+  margin-top: 10px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.rev-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--warn));
+  transition: width 0.06s linear;
+}
+
+.rev-redline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 92%;
+  width: 2px;
+  background: rgba(255, 90, 70, 0.8);
+}
+
+.drive-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.drive-flags {
+  font-family: var(--mono);
+  color: var(--warn);
+}
+
+.drive-keys {
+  margin: 9px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.9;
+}
+
 /* ---------------------------------------------------------- inspector */
 
 .panel-inspector {

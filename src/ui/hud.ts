@@ -5,6 +5,7 @@
  * raises callbacks, so the render loop never has to know how a panel is built.
  */
 
+import type { DriveTelemetry } from '../sim/driver';
 import type { Agent, Population } from '../sim/population';
 import type { Building, DataAudit, Poi, World } from '../world/types';
 import { POI_LABEL } from '../data/tags';
@@ -17,7 +18,9 @@ const $ = <T extends HTMLElement>(id: string): T => {
 
 export interface HudCallbacks {
   onSpeedChange(scale: number): void;
-  onModeChange(mode: 'orbit' | 'walk' | 'follow'): void;
+  onModeChange(mode: 'orbit' | 'walk'): void;
+  /** The Drive chip: find a street, put a car on it, get in. */
+  onDrive(): void;
   onSearch(query: string, radius: number): void;
   onPickResult(lat: number, lon: number, name: string, radius: number): void;
   onFollow(): void;
@@ -65,6 +68,14 @@ export class Hud {
   private readonly statBuildings = $('stat-buildings');
   private readonly statRoads = $('stat-roads');
   private readonly statFps = $('stat-fps');
+
+  private readonly drivePanel = $('drive-panel');
+  private readonly driveKmh = $('drive-kmh');
+  private readonly driveGear = $('drive-gear');
+  private readonly driveRev = $('drive-rev');
+  private readonly driveWhere = $('drive-where');
+  private readonly driveFlags = $('drive-flags');
+  private readonly driveBtn = $<HTMLButtonElement>('drive-btn');
 
   private readonly inspector = $('inspector');
   private readonly inspectorBody = $('inspector-body');
@@ -199,6 +210,54 @@ export class Hud {
     this.statFps.textContent = String(Math.round(fps));
   }
 
+  /* --------------------------------------------------------- dashboard */
+
+  /** Grey out the Drive chip where the map has no street to put a car on. */
+  setDriveAvailable(available: boolean): void {
+    this.driveBtn.disabled = !available;
+    this.driveBtn.title = available
+      ? 'Put a car on the street below and drive it'
+      : 'No street nearby to start from — move the view over a road first';
+  }
+
+  /**
+   * The dashboard. Passing null puts the car away.
+   *
+   * Throttled like the other stats: at 60 fps this is six DOM writes a frame
+   * for numbers nobody can read that fast.
+   */
+  updateDrive(now: number, telemetry: DriveTelemetry | null): void {
+    if (!telemetry) {
+      this.drivePanel.hidden = true;
+      return;
+    }
+    this.drivePanel.hidden = false;
+    if (now - this.lastDriveUpdate < 70) return;
+    this.lastDriveUpdate = now;
+
+    this.driveKmh.textContent = String(Math.round(telemetry.speedKmh));
+    this.driveGear.textContent = telemetry.gearLabel;
+    this.driveRev.style.width = `${Math.min(100, telemetry.revFraction * 92)}%`;
+
+    const where = telemetry.streetName
+      ? telemetry.streetName
+      : telemetry.onRoad
+        ? 'Unnamed street'
+        : 'Off the road';
+    const grade = Math.abs(telemetry.gradePercent) >= 1.5
+      ? ` · ${telemetry.gradePercent > 0 ? '↑' : '↓'} ${Math.abs(telemetry.gradePercent).toFixed(0)}%`
+      : '';
+    this.driveWhere.textContent = where + grade;
+
+    const flags: string[] = [];
+    if (telemetry.wheelspin) flags.push('wheelspin');
+    if (telemetry.understeer) flags.push('no grip');
+    if (!telemetry.onRoad) flags.push('rough going');
+    this.driveFlags.textContent = flags.join(' · ');
+  }
+
+  private lastDriveUpdate = 0;
+
   /* --------------------------------------------------------- inspector */
 
   showAgent(agent: Agent, population: Population, world: World): void {
@@ -300,6 +359,13 @@ export class Hud {
     }
   }
 
+  /** Move the speed selection without raising the callback that set it. */
+  setSpeed(scale: number): void {
+    for (const chip of document.querySelectorAll<HTMLElement>('[data-speed]')) {
+      chip.classList.toggle('is-active', Number(chip.dataset.speed) === scale);
+    }
+  }
+
   /* ------------------------------------------------------------- bind */
 
   private bindSpeeds(): void {
@@ -317,8 +383,9 @@ export class Hud {
   private bindModes(): void {
     for (const chip of document.querySelectorAll<HTMLElement>('[data-mode]')) {
       chip.addEventListener('click', () => {
-        const mode = chip.dataset.mode as 'orbit' | 'walk' | 'follow';
+        const mode = chip.dataset.mode as 'orbit' | 'walk' | 'follow' | 'drive';
         if (mode === 'follow') this.cb.onFollow();
+        else if (mode === 'drive') this.cb.onDrive();
         else this.cb.onModeChange(mode);
       });
     }

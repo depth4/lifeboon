@@ -9,21 +9,25 @@
 import * as THREE from 'three';
 import type { Railway, Road, RoadClass, Vec2 } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
-import { smoothProfile } from '../terrain/heightfield';
+import {
+  LAYER_HEIGHT as RAIL_LAYER_HEIGHT,
+  ROAD_SURFACE_Y,
+  bridgeProfile,
+  gradedProfile,
+  roadSurfaceProfile,
+} from '../world/roadprofile';
 import { asphaltTexture } from './textures';
 
-/** Height above ground per layer, so bridges clear what they cross. */
-const LAYER_HEIGHT = 5;
 /**
  * Layer heights above the ground surface.
  *
- * Land cover tops out at 0.21 m (render/ground.ts: its own lift plus up to
- * three levels of nesting), so the carriageway starts above that and the kerb
- * above the carriageway. Against land cover the kerb stands 17 cm proud, which
- * is about right; against bare ground it is more, which is the price of
+ * The carriageway height itself lives in world/roadprofile.ts, because the
+ * simulation needs it too — a car has to sit on the deck that was drawn. The
+ * kerb sits above the carriageway; against land cover it stands 17 cm proud,
+ * which is about right, and against bare ground more, which is the price of
  * keeping every surface out of the others' depth noise.
  */
-const SURFACE_Y = 0.28;
+const SURFACE_Y = ROAD_SURFACE_Y;
 const MARKING_Y = 0.31;
 const PAVEMENT_Y = 0.38;
 /** Width of the kerb strip that separates carriageway from pavement. */
@@ -142,85 +146,6 @@ export function emitRibbon(
   }
 }
 
-/**
- * The height profile a road actually runs at.
- *
- * Roads are engineered, not draped: they cut through humps and fill hollows,
- * so following the DEM sample-for-sample gives a visibly wobbling ribbon.
- * We smooth the profile, then clamp how far it may stray from the real ground
- * so a road on a steep hillside never ends up on stilts or in a trench.
- */
-function roadProfile(
-  points: Vec2[],
-  terrain: Terrain,
-  lift: number,
-  maxDeviation = 0.6,
-): number[] {
-  const raw = points.map(([x, z]) => terrain.heightAt(x, z));
-  const smoothed = smoothProfile(raw, 3);
-  const out = new Array<number>(raw.length);
-  for (let i = 0; i < raw.length; i++) {
-    const drift = Math.max(-maxDeviation, Math.min(maxDeviation, smoothed[i] - raw[i]));
-    out[i] = raw[i] + drift + lift;
-  }
-  return out;
-}
-
-/**
- * The height profile of a bridge deck.
- *
- * A bridge is not a road at a fixed altitude — that was the old behaviour and
- * it produced exactly what it sounds like, a slab of tarmac hanging in the air
- * with no connection to either bank. A deck starts and ends at the ground it
- * meets, and arches between just enough to clear whatever it spans, so the
- * approaches join the ordinary road surface without a step.
- */
-function bridgeProfile(
-  points: Vec2[],
-  terrain: Terrain,
-  lift: number,
-  layer: number,
-): number[] {
-  const n = points.length;
-  const startY = terrain.heightAt(points[0][0], points[0][1]);
-  const endY = terrain.heightAt(points[n - 1][0], points[n - 1][1]);
-
-  // Distance along the way, so the arch is shaped by length rather than by
-  // how finely the way happens to be drawn.
-  const cumulative = new Array<number>(n).fill(0);
-  for (let i = 1; i < n; i++) {
-    cumulative[i] = cumulative[i - 1] +
-      Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
-  }
-  const total = cumulative[n - 1] || 1;
-
-  // How high the deck must ride to clear the ground and any water beneath it.
-  const CLEARANCE = 3.5;
-  let needed = 0;
-  for (let i = 0; i < n; i++) {
-    const t = cumulative[i] / total;
-    const chord = startY + (endY - startY) * t;
-    const below = terrain.heightAt(points[i][0], points[i][1]);
-    needed = Math.max(needed, below + CLEARANCE - chord);
-  }
-  // A long viaduct needs a real arch; a short canal crossing needs almost none.
-  const arch = Math.max(0, Math.min(needed, 12));
-
-  // `layer=1` is simply what OSM puts on any bridge — it means "above the
-  // thing I cross", which the arch has already accounted for. Only genuinely
-  // stacked structures, layer 2 and up, get lifted again.
-  const stacked = Math.max(0, layer - 1) * LAYER_HEIGHT;
-
-  const out = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    const t = cumulative[i] / total;
-    const chord = startY + (endY - startY) * t;
-    // Sine keeps both ends flush with the ground and lifts only the middle.
-    out[i] = chord + Math.sin(t * Math.PI) * arch + lift + stacked;
-  }
-  return out;
-}
-
 /** Shift a whole profile up, for pavements and markings sitting on the road. */
 function raise(profile: number[], by: number): number[] {
   return profile.map((h) => h + by);
@@ -246,14 +171,8 @@ export function buildRoadMeshes(roads: Road[], terrain: Terrain): RoadMeshes {
 
   for (const road of roads) {
     if (road.points.length < 2) continue;
-    const yBase = road.layer * LAYER_HEIGHT;
     const half = road.width / 2;
-
-    const profile = road.bridge
-      ? bridgeProfile(road.points, terrain, SURFACE_Y, road.layer)
-      : road.tunnel
-        ? roadProfile(road.points, terrain, SURFACE_Y, 0.5)
-        : roadProfile(road.points, terrain, SURFACE_Y + yBase);
+    const profile = roadSurfaceProfile(road, terrain);
 
     const { left, right } = offsetPolyline(road.points, half);
     color.set(SURFACE_COLOR[road.cls]);
@@ -383,14 +302,14 @@ export function buildRailwayMeshes(railways: Railway[], terrain: Terrain): RoadM
     if (line.points.length < 2) continue;
     if (line.tunnel) continue; // Underground track is not visible from here.
 
-    const yBase = line.layer * LAYER_HEIGHT;
+    const yBase = line.layer * RAIL_LAYER_HEIGHT;
     const tracks = Math.max(1, Math.min(6, line.tracks));
     // Rail tolerates far less gradient than a road, so its profile is smoothed
     // harder and allowed to stray further from the ground — which is precisely
     // why real lines run in cuttings and on embankments.
     const profile = line.bridge
       ? bridgeProfile(line.points, terrain, SURFACE_Y, line.layer)
-      : roadProfile(line.points, terrain, SURFACE_Y + yBase, 4);
+      : gradedProfile(line.points, terrain, SURFACE_Y + yBase, 4);
 
     // Trams run embedded in the carriageway, not on a ballast bed — laying
     // gravel down the middle of a city street is the wrong picture entirely.

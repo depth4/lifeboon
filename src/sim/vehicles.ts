@@ -25,7 +25,9 @@ import type { VehicleSpec } from './vehicle';
  * Estimated: drag coefficient 0.44 for an upright two-box body of the period;
  * frontal area from roughly 1.42 m wide by 1.40 m tall at 85% fill; rolling
  * radius 0.25 m for the standard 135/80 R12 fitment; 62% of weight over the
- * front axle, typical for a transverse front-drive layout.
+ * front axle, typical for a transverse front-drive layout. Wheelbase 2.18 m
+ * and the body dimensions are the commonly quoted ones for this class and
+ * should be confirmed against a primary source.
  */
 export const CITY_MICROCAR: VehicleSpec = {
   name: 'City microcar, 0.65 L twin',
@@ -40,10 +42,15 @@ export const CITY_MICROCAR: VehicleSpec = {
     redlineRpm: 6000,
   },
   gearRatios: [3.7, 2.06, 1.27, 0.9],
+  reverseRatio: 3.5,
   finalDrive: 4.54,
   // Manual gearbox and short driveshafts; losses are modest.
   drivetrainEfficiency: 0.9,
   wheelRadiusM: 0.25,
+  wheelbaseM: 2.18,
+  lengthM: 3.2,
+  widthM: 1.42,
+  heightM: 1.4,
   dragCoefficient: 0.44,
   frontalAreaM2: 1.69,
   // Bias-ply-era tyres on a rough surface.
@@ -71,9 +78,14 @@ export const COMPACT_HATCHBACK: VehicleSpec = {
     redlineRpm: 6500,
   },
   gearRatios: [3.64, 1.95, 1.36, 1.03, 0.82],
+  reverseRatio: 3.58,
   finalDrive: 3.94,
   drivetrainEfficiency: 0.92,
   wheelRadiusM: 0.3,
+  wheelbaseM: 2.6,
+  lengthM: 4.2,
+  widthM: 1.75,
+  heightM: 1.47,
   dragCoefficient: 0.32,
   frontalAreaM2: 2.1,
   rollingResistance: 0.011,

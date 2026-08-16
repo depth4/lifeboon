@@ -18,6 +18,9 @@ import { carveWaterways, fetchHeightfield } from './terrain/elevation';
 import { FlatTerrain } from './terrain/heightfield';
 import { NavGraph } from './sim/navgraph';
 import { Population, type Agent } from './sim/population';
+import { RoadIndex } from './sim/roadindex';
+import { DrivenVehicle, type DriveControls } from './sim/driver';
+import { CITY_MICROCAR } from './sim/vehicles';
 import { SceneRig } from './render/scene';
 import { CameraController } from './render/camera';
 import { buildBuildingMeshes, BuildingIndex, type BuildingMeshes } from './render/buildings';
@@ -25,6 +28,7 @@ import { buildRailwayMeshes, buildRoadMeshes, type RoadMeshes } from './render/r
 import { buildGround, type GroundMeshes } from './render/ground';
 import { buildProps, type Props } from './render/props';
 import { PeopleRenderer } from './render/people';
+import { CarModel } from './render/car';
 import { Hud } from './ui/hud';
 import type { World } from './world/types';
 
@@ -59,6 +63,7 @@ class App {
   private graph: NavGraph | null = null;
   private population: Population | null = null;
   private buildingIndex: BuildingIndex | null = null;
+  private roadIndex: RoadIndex | null = null;
 
   private buildingMeshes: BuildingMeshes | null = null;
   private roadMeshes: RoadMeshes | null = null;
@@ -66,6 +71,13 @@ class App {
   private groundMeshes: GroundMeshes | null = null;
   private props: Props | null = null;
   private readonly worldGroup = new THREE.Group();
+
+  /** The car, once one has been put on the road. It stays parked when you get out. */
+  private car: DrivenVehicle | null = null;
+  private carModel: CarModel | null = null;
+  private readonly driveKeys = new Set<string>();
+  private reverseIntent = false;
+  private stoppedFor = 0;
 
   private selected: Agent | null = null;
   private loading = false;
@@ -86,14 +98,17 @@ class App {
         if (scale > 0) this.clock.timeScale = scale;
       },
       onModeChange: (mode) => {
+        this.leaveCar();
         this.cameras.setMode(mode);
         this.hud.setMode(mode);
       },
       onFollow: () => {
         if (!this.selected) return;
+        this.leaveCar();
         this.cameras.setMode('follow');
         this.hud.setMode('follow');
       },
+      onDrive: () => this.enterCar(),
       onDeselect: () => {
         this.selected = null;
         if (this.cameras.mode === 'follow') {
@@ -108,6 +123,8 @@ class App {
     window.addEventListener('resize', this.onResize);
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('keydown', this.onDriveKeyDown);
+    window.addEventListener('keyup', this.onDriveKeyUp);
     this.onResize();
   }
 
@@ -221,6 +238,10 @@ class App {
     this.hud.setLoading('Mapping walkable routes…', 0.92);
     await nextFrame();
     this.graph = NavGraph.build(world.roads);
+    // Streets a car may use, indexed so the simulation can ask what is under
+    // the wheels sixty times a second.
+    this.roadIndex = new RoadIndex(world.roads.filter((r) => r.drivable), world.terrain);
+    this.hud.setDriveAvailable(this.roadIndex.roadCount > 0);
 
     this.hud.setLoading('Moving people in…', 0.97);
     await nextFrame();
@@ -238,6 +259,10 @@ class App {
   }
 
   private teardownWorld(): void {
+    this.leaveCar();
+    this.carModel?.dispose();
+    this.carModel = null;
+    this.car = null;
     this.worldGroup.clear();
     this.buildingMeshes?.dispose();
     this.roadMeshes?.dispose();
@@ -252,6 +277,7 @@ class App {
     this.graph = null;
     this.population = null;
     this.buildingIndex = null;
+    this.roadIndex = null;
   }
 
   /* -------------------------------------------------------------- loop */
@@ -274,6 +300,18 @@ class App {
       this.population.update(dtSim, this.clock);
     }
 
+    // The car runs on real time whatever the clock is doing: a simulation
+    // speed is a choice about watching the city, not about how a car behaves.
+    let braking = false;
+    if (this.driving && this.car) {
+      const controls = this.driveControls(dtReal);
+      braking = controls.brake > 0 || controls.handbrake;
+      this.car.update(dtReal, controls);
+      this.cameras.setDrivePose(
+        this.car.x, this.car.y, this.car.z, this.car.heading, this.car.state.speed,
+      );
+    }
+
     // Follow mode tracks the selected person, even while they are indoors —
     // the camera waits outside the door rather than jumping away.
     if (this.selected && this.cameras.mode === 'follow') {
@@ -293,12 +331,16 @@ class App {
 
     this.buildingMeshes?.setWindowLight(this.rig.nightFactor * 0.8);
     this.props?.setNight(this.rig.nightFactor);
+    if (this.car && this.carModel) {
+      this.carModel.sync(this.car, braking, this.rig.nightFactor);
+    }
 
     if (this.population) {
       this.people.update(this.population.visible, camera.position, this.realElapsed);
     }
 
     this.hud.updateClock(this.clock.formatTime(), this.clock.formatDay());
+    this.hud.updateDrive(now, this.driving && this.car ? this.car.telemetry() : null);
     this.hud.updateStats(
       now,
       this.cameras.altitude,
@@ -319,6 +361,178 @@ class App {
 
   private lastInspectorUpdate = 0;
 
+
+  /* ------------------------------------------------------------ driving */
+
+  /**
+   * Get in. If there is already a car parked nearby, that one; otherwise put a
+   * new one on the nearest street to whatever the view is centred on.
+   */
+  private enterCar(): void {
+    if (!this.roadIndex || !this.world) return;
+
+    const anchor = this.cameras.target;
+    if (this.car) {
+      const away = Math.hypot(this.car.x - anchor.x, this.car.z - anchor.z);
+      // Far from the parked car, fetch a fresh one rather than teleporting.
+      if (away > 400) this.car = null;
+    }
+
+    if (!this.car) {
+      const spot = this.findParkingSpot(anchor.x, anchor.z);
+      if (!spot) return;
+
+      this.car = new DrivenVehicle(
+        CITY_MICROCAR, this.world.terrain, this.roadIndex, this.buildingIndex,
+      );
+      this.car.placeAt(spot.x, spot.z, spot.heading);
+
+      this.carModel?.dispose();
+      this.carModel = new CarModel(CITY_MICROCAR, this.world.seed % 6);
+      this.worldGroup.add(this.carModel.group);
+    }
+
+    // Driving happens in real time. At 60× a minute passes every second, which
+    // is fine to watch and impossible to drive in, so step the clock back down.
+    this.clock.paused = false;
+    this.clock.timeScale = 1;
+    this.hud.setSpeed(1);
+
+    this.selected = null;
+    this.hud.hideInspector();
+    this.driveKeys.clear();
+    this.reverseIntent = false;
+    this.cameras.setMode('drive');
+    this.hud.setMode('drive');
+  }
+
+  /** Get out, leaving the car where it stands. */
+  private leaveCar(): void {
+    if (this.cameras.mode !== 'drive') return;
+    this.cameras.setMode('orbit');
+    this.hud.setMode('orbit');
+    this.driveKeys.clear();
+  }
+
+  /**
+   * Somewhere on a street to put a car down, working outwards from the point
+   * the view is centred on.
+   *
+   * The clearance check is the part that matters. Building footprints and road
+   * centrelines overlap more often than you would expect — arcades, gateways,
+   * service roads through courtyards, and plain mapping error — and dropping a
+   * car onto one of those puts it inside a wall before it has moved a metre.
+   */
+  private findParkingSpot(
+    anchorX: number,
+    anchorZ: number,
+  ): { x: number; z: number; heading: number } | null {
+    if (!this.roadIndex) return null;
+    let fallback: { x: number; z: number; heading: number } | null = null;
+
+    for (let ring = 0; ring < 14; ring++) {
+      const radius = ring * 30;
+      const probes = ring === 0 ? 1 : 8;
+      for (let p = 0; p < probes; p++) {
+        const angle = (p / probes) * Math.PI * 2;
+        const hit = this.roadIndex.nearest(
+          anchorX + Math.cos(angle) * radius,
+          anchorZ + Math.sin(angle) * radius,
+          150,
+        );
+        if (!hit) continue;
+
+        const [dx, dz] = hit.direction;
+        const heading = Math.atan2(dx, dz);
+        // Sit off the centreline rather than astride it. There is no lane
+        // model yet, so which side is a display choice, not a rule.
+        const offset = Math.min(hit.road.width / 4, 2.2);
+
+        // Try both sides: on a narrow street one of them may be built over.
+        for (const side of [1, -1]) {
+          const x = hit.point[0] - dz * offset * side;
+          const z = hit.point[1] + dx * offset * side;
+          if (!fallback) fallback = { x, z, heading };
+          if (this.carFitsAt(x, z, heading)) return { x, z, heading };
+        }
+      }
+    }
+    // Every candidate was built over. Better a car in an awkward spot — which
+    // it can now drive out of — than a Drive button that does nothing.
+    return fallback;
+  }
+
+  /** Whether a car standing here would be clear of every building. */
+  private carFitsAt(x: number, z: number, heading: number): boolean {
+    if (!this.buildingIndex) return true;
+    const fx = Math.sin(heading);
+    const fz = Math.cos(heading);
+    const lx = Math.cos(heading);
+    const lz = -Math.sin(heading);
+    // A little larger than the car, so it starts with room to pull away.
+    const halfL = CITY_MICROCAR.lengthM / 2 + 0.6;
+    const halfW = CITY_MICROCAR.widthM / 2 + 0.4;
+
+    for (const [a, b] of [[1, 1], [1, -1], [-1, 1], [-1, -1], [0, 0]] as const) {
+      if (this.buildingIndex.at(x + fx * halfL * a + lx * halfW * b,
+                                z + fz * halfL * a + lz * halfW * b)) return false;
+    }
+    return true;
+  }
+
+  private get driving(): boolean {
+    return this.cameras.mode === 'drive' && this.car !== null;
+  }
+
+  private onDriveKeyDown = (e: KeyboardEvent): void => {
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+    if (!this.driving) return;
+
+    if (e.code === 'Escape') {
+      this.leaveCar();
+      return;
+    }
+    if (e.code === 'KeyR') this.reverseIntent = !this.reverseIntent;
+    // Space scrolls the page otherwise, and the handbrake is worth a key.
+    if (e.code === 'Space') e.preventDefault();
+    this.driveKeys.add(e.code);
+  };
+
+  private onDriveKeyUp = (e: KeyboardEvent): void => {
+    this.driveKeys.delete(e.code);
+  };
+
+  /**
+   * Pedals from keys.
+   *
+   * W and S are "go" and "stop" rather than "forwards" and "backwards": brake
+   * to a standstill while holding S and the car takes reverse, which is how
+   * every car with an automatic-feeling control scheme behaves and means there
+   * is nothing to learn. R still selects it outright.
+   */
+  private driveControls(dt: number): DriveControls {
+    const held = (...codes: string[]) => codes.some((c) => this.driveKeys.has(c));
+    const forward = held('KeyW', 'ArrowUp');
+    const backward = held('KeyS', 'ArrowDown');
+
+    const stopped = (this.car?.state.speed ?? 0) < 0.6;
+    this.stoppedFor = stopped ? this.stoppedFor + dt : 0;
+    if (this.stoppedFor > 0.35) {
+      if (backward && !forward) this.reverseIntent = true;
+      if (forward && !backward) this.reverseIntent = false;
+    }
+
+    const reverse = this.reverseIntent;
+    return {
+      throttle: (reverse ? backward : forward) ? 1 : 0,
+      brake: (reverse ? forward : backward) ? 1 : 0,
+      steer: (held('KeyD', 'ArrowRight') ? 1 : 0) - (held('KeyA', 'ArrowLeft') ? 1 : 0),
+      reverse,
+      handbrake: held('Space'),
+    };
+  }
+
   /* ----------------------------------------------------------- picking */
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -330,6 +544,8 @@ class App {
     const elapsed = performance.now() - this.pointerDownAt.time;
     // A drag is a camera move, not a selection.
     if (moved > 5 || elapsed > 700) return;
+    // A click while driving is the camera looking around, not a selection.
+    if (this.cameras.mode === 'drive') return;
     this.pick(e.clientX, e.clientY);
   };
 

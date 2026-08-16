@@ -16,7 +16,7 @@ import * as THREE from 'three';
 import type { Terrain } from '../terrain/heightfield';
 import { FlatTerrain } from '../terrain/heightfield';
 
-export type CameraMode = 'orbit' | 'walk' | 'follow';
+export type CameraMode = 'orbit' | 'walk' | 'follow' | 'drive';
 
 const MIN_DISTANCE = 1.8;
 const MAX_DISTANCE = 9000;
@@ -42,6 +42,19 @@ export class CameraController {
   /** Follow-mode subject position, updated externally each frame. */
   private readonly followPoint = new THREE.Vector3();
   followDistance = 14;
+
+  /** Drive-mode chase camera: where the car is and which way it points. */
+  private readonly drivePoint = new THREE.Vector3();
+  private driveHeading = 0;
+  private driveSpeed = 0;
+  /** Distance behind the car, adjustable with the wheel. */
+  driveDistance = 8.5;
+  /** Look-around offset, which eases back to straight-behind when released. */
+  private driveYawOffset = 0;
+  private drivePitchOffset = 0;
+  /** The eye position, lagged so the camera swings rather than snaps. */
+  private readonly driveEye = new THREE.Vector3();
+  private driveEyeValid = false;
 
   private dragging: 'rotate' | 'pan' | null = null;
   private lastX = 0;
@@ -111,6 +124,14 @@ export class CameraController {
       return;
     }
 
+    if (this.mode === 'drive') {
+      // Look around the car while driving; let go and the view swings back
+      // behind it, which is what every chase camera worth using does.
+      this.driveYawOffset = clamp(this.driveYawOffset - dx * 0.006, -2.6, 2.6);
+      this.drivePitchOffset = clamp(this.drivePitchOffset - dy * 0.004, -0.5, 0.9);
+      return;
+    }
+
     if (this.dragging === 'rotate') {
       this.yaw -= dx * 0.005;
       // Never quite reach the poles: straight down loses all sense of depth.
@@ -135,7 +156,9 @@ export class CameraController {
     if (this.mode === 'walk') return;
     // Constant ratio per notch: the same gesture works at 5 m and at 5 km.
     const factor = Math.exp(Math.sign(e.deltaY) * Math.min(1, Math.abs(e.deltaY) / 320) * 0.55);
-    if (this.mode === 'follow') {
+    if (this.mode === 'drive') {
+      this.driveDistance = clamp(this.driveDistance * factor, 3, 120);
+    } else if (this.mode === 'follow') {
       this.followDistance = clamp(this.followDistance * factor, 3, 400);
     } else {
       this.targetDistance = clamp(this.targetDistance * factor, MIN_DISTANCE, MAX_DISTANCE);
@@ -156,6 +179,17 @@ export class CameraController {
 
   setMode(mode: CameraMode): void {
     if (mode === this.mode) return;
+    if (mode === 'drive') {
+      this.driveEyeValid = false;
+      this.driveYawOffset = 0;
+      this.drivePitchOffset = 0;
+    } else if (this.mode === 'drive') {
+      // Step back out to where the car was, so the view does not teleport.
+      this.target.copy(this.drivePoint);
+      this.yaw = this.driveHeading + Math.PI;
+      this.targetDistance = Math.max(40, this.driveDistance * 4);
+      this.distance = this.targetDistance;
+    }
     if (mode === 'walk') {
       // Step down to where the camera is currently looking.
       const ground = this.terrain.heightAt(this.target.x, this.target.z);
@@ -199,13 +233,86 @@ export class CameraController {
   }
 
   get currentDistance(): number {
-    return this.mode === 'follow' ? this.followDistance : this.distance;
+    if (this.mode === 'follow') return this.followDistance;
+    if (this.mode === 'drive') return this.driveDistance;
+    return this.distance;
   }
 
   update(dt: number): void {
     if (this.mode === 'walk') this.updateWalk(dt);
+    else if (this.mode === 'drive') this.updateDrive(dt);
     else this.updateOrbit(dt);
     this.updateProjection();
+  }
+
+  /**
+   * Where the car is, in world metres, plus which way it points and how fast
+   * it is going. Fed in every frame by the simulation.
+   */
+  setDrivePose(x: number, y: number, z: number, heading: number, speedMs: number): void {
+    this.drivePoint.set(x, y, z);
+    this.driveHeading = heading;
+    this.driveSpeed = speedMs;
+  }
+
+  /**
+   * Chase camera.
+   *
+   * Two things make this feel like driving rather than like dragging a box
+   * around. The eye lags the car, so it swings wide on a corner instead of
+   * being welded behind the boot; and it pulls back and drops as speed rises,
+   * which is what gives a sense of pace on a screen with no wind and no noise.
+   */
+  private updateDrive(dt: number): void {
+    // Let go of the mouse and the view returns behind the car.
+    if (!this.dragging) {
+      const settle = 1 - Math.pow(0.06, dt);
+      this.driveYawOffset -= this.driveYawOffset * settle;
+      this.drivePitchOffset -= this.drivePitchOffset * settle;
+    }
+
+    const speedPull = Math.min(1, Math.abs(this.driveSpeed) / 30);
+    const dist = this.driveDistance * (1 + speedPull * 0.28);
+    const height = Math.max(1.7, this.driveDistance * 0.42) * (1 - speedPull * 0.18);
+
+    const yaw = this.driveHeading + this.driveYawOffset;
+    // Forward is (sin, cos) to match the simulation, so behind is its negative.
+    const wanted = new THREE.Vector3(
+      this.drivePoint.x - Math.sin(yaw) * dist,
+      this.drivePoint.y + height + this.drivePitchOffset * dist * 0.6,
+      this.drivePoint.z - Math.cos(yaw) * dist,
+    );
+
+    if (!this.driveEyeValid) {
+      this.driveEye.copy(wanted);
+      this.driveEyeValid = true;
+    } else {
+      // Lag, but never more than a car length behind where it should be, or a
+      // fast corner leaves the camera looking at nothing.
+      const lag = 1 - Math.pow(0.0009, dt);
+      this.driveEye.lerp(wanted, lag);
+      const drift = this.driveEye.distanceTo(wanted);
+      if (drift > dist * 0.8) {
+        this.driveEye.lerp(wanted, 1 - (dist * 0.8) / drift);
+      }
+    }
+
+    // Never let the camera end up inside the hill behind the car.
+    const ground = this.terrain.heightAt(this.driveEye.x, this.driveEye.z);
+    this.driveEye.y = Math.max(this.driveEye.y, ground + 1.2);
+
+    this.camera.position.copy(this.driveEye);
+    // Look slightly ahead of the car rather than at it: you drive where you
+    // are going, not where you are.
+    const leadDistance = Math.min(14, 2 + Math.abs(this.driveSpeed) * 0.5);
+    this.camera.lookAt(
+      this.drivePoint.x + Math.sin(this.driveHeading) * leadDistance,
+      this.drivePoint.y + 1.1,
+      this.drivePoint.z + Math.cos(this.driveHeading) * leadDistance,
+    );
+
+    // Shadows and fog follow the camera target, so keep it on the car.
+    this.target.set(this.drivePoint.x, this.drivePoint.y, this.drivePoint.z);
   }
 
   private updateOrbit(dt: number): void {

@@ -20,7 +20,7 @@
 const RPM_TO_RAD = (2 * Math.PI) / 60;
 /** Air density at sea level, 15 °C. */
 const AIR_DENSITY = 1.225;
-const GRAVITY = 9.81;
+export const GRAVITY = 9.81;
 
 export interface EngineSpec {
   /** Peak power in watts, and the crank speed it happens at. */
@@ -39,13 +39,25 @@ export interface VehicleSpec {
   /** Kerb mass plus a nominal occupant, in kilograms. */
   massKg: number;
   engine: EngineSpec;
-  /** Ratios from first gear up; no reverse. */
+  /** Ratios from first gear up. */
   gearRatios: number[];
+  /**
+   * Reverse ratio, normally a little shorter than first. Kept separate rather
+   * than appended to the list because reverse is never selected by the
+   * gear-change logic — you engage it deliberately, standing still.
+   */
+  reverseRatio: number;
   finalDrive: number;
   /** Fraction of crank torque reaching the wheels. */
   drivetrainEfficiency: number;
   /** Rolling radius under load, in metres. */
   wheelRadiusM: number;
+  /** Axle separation, which sets how sharply the car turns. */
+  wheelbaseM: number;
+  /** Body dimensions, for the shell that gets drawn around all this. */
+  lengthM: number;
+  widthM: number;
+  heightM: number;
   dragCoefficient: number;
   frontalAreaM2: number;
   /** Rolling resistance coefficient. */
@@ -98,6 +110,22 @@ const SURFACE_GRIP: Record<Surface, number> = {
 };
 
 /**
+ * Friction coefficient actually available at the tyres.
+ *
+ * One definition, used by everything that asks the road for grip — pulling
+ * away, braking and cornering all draw on the same number, which is why a worn
+ * set of tyres in the wet makes a car slower *and* vaguer *and* longer to stop
+ * rather than just one of the three.
+ */
+export function availableGrip(
+  spec: VehicleSpec,
+  condition: VehicleCondition,
+  surface: Surface,
+): number {
+  return spec.tyreFriction * SURFACE_GRIP[surface] * (0.55 + 0.45 * condition.tyres);
+}
+
+/**
  * Engine torque at a given crank speed.
  *
  * Manufacturers publish two points — peak torque and peak power — and nothing
@@ -108,8 +136,20 @@ const SURFACE_GRIP: Record<Surface, number> = {
  * The narrower the gap between the two quoted speeds, the flatter the curve;
  * a small two-cylinder with its peaks far apart gets the peaky delivery it
  * really has.
+ *
+ * Past the redline the engine stops pulling, because a real one has its fuel
+ * cut there. Without that, a very short ratio — reverse especially — would go
+ * on making peak torque to any speed at all.
  */
 export function engineTorque(engine: EngineSpec, rpm: number): number {
+  if (rpm > engine.redlineRpm) {
+    // Soft cut over a couple of hundred rpm rather than a cliff, which is both
+    // what a real limiter feels like and what keeps the integrator stable.
+    const over = (rpm - engine.redlineRpm) / 200;
+    if (over >= 1) return 0;
+    return engineTorque(engine, engine.redlineRpm) * (1 - over);
+  }
+
   const clamped = Math.max(engine.idleRpm, Math.min(engine.redlineRpm, rpm));
 
   // Torque implied by the quoted peak power: P = T * omega.
@@ -220,7 +260,7 @@ export function stepLongitudinal(
   const demandedForce = wheelTorque / spec.wheelRadiusM;
 
   // --- what the road will take ------------------------------------------
-  const grip = spec.tyreFriction * SURFACE_GRIP[surface] * (0.55 + 0.45 * condition.tyres);
+  const grip = availableGrip(spec, condition, surface);
   const drivenLoad = spec.massKg * GRAVITY * spec.drivenAxleLoadShare;
   const tractionLimit = grip * drivenLoad;
 

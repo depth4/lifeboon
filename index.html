@@ -68,6 +68,7 @@
       <div class="modes" role="group" aria-label="Camera mode">
         <button class="chip is-active" data-mode="orbit">Orbit</button>
         <button class="chip" data-mode="walk">Walk</button>
+        <button class="chip" data-mode="drive" id="drive-btn" disabled>Drive</button>
         <button class="chip" data-mode="follow" id="follow-btn" disabled>Follow</button>
       </div>
       <dl class="stats" id="stats">
@@ -78,6 +79,28 @@
         <div><dt>Streets</dt><dd id="stat-roads">—</dd></div>
         <div><dt>FPS</dt><dd id="stat-fps">—</dd></div>
       </dl>
+    </section>
+
+    <!-- Dashboard, only while driving -->
+    <section class="panel panel-drive" id="drive-panel" hidden>
+      <div class="drive-top">
+        <div class="drive-speed">
+          <span id="drive-kmh">0</span><small>km/h</small>
+        </div>
+        <div class="drive-gear" id="drive-gear">1</div>
+      </div>
+      <div class="rev" aria-hidden="true">
+        <div class="rev-fill" id="drive-rev"></div>
+        <div class="rev-redline"></div>
+      </div>
+      <div class="drive-meta">
+        <span id="drive-where">—</span>
+        <span id="drive-flags" class="drive-flags"></span>
+      </div>
+      <p class="drive-keys">
+        <kbd>W</kbd><kbd>S</kbd> throttle &amp; brake · <kbd>A</kbd><kbd>D</kbd> steer ·
+        <kbd>R</kbd> reverse · <kbd>Space</kbd> handbrake · <kbd>Esc</kbd> get out
+      </p>
     </section>
 
     <!-- Inspector -->
@@ -111,7 +134,24 @@
           <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Shift</kbd> faster</li>
           <li><kbd>Click</kbd> a person to inspect them, then <kbd>Follow</kbd></li>
           <li><kbd>Click</kbd> a building for what the map says about it</li>
+          <li><kbd>Drive</kbd> puts a car on the nearest street below you</li>
         </ul>
+
+        <h3>Driving</h3>
+        <ul class="keys">
+          <li><kbd>W</kbd> accelerate · <kbd>S</kbd> brake, then reverse · <kbd>A</kbd><kbd>D</kbd> steer</li>
+          <li><kbd>R</kbd> reverse gear · <kbd>Space</kbd> handbrake · <kbd>Esc</kbd> get out</li>
+          <li><kbd>Drag</kbd> look around · <kbd>Wheel</kbd> move the camera in or out</li>
+        </ul>
+        <p class="fineprint">
+          The car is simulated from a published specification: mass, power,
+          torque, gear ratios, final drive, drag and rolling resistance. It
+          accelerates, changes gear, struggles on hills and stops in the
+          distance those numbers imply, and it loses grip in a corner when the
+          speed asks for more than the tyres can give. It does not yet slide,
+          have suspension, or hit anything except a building wall — and there
+          is no other traffic to hit.
+        </p>
 
         <h3>What is deliberately not here</h3>
         <ul class="keys">
