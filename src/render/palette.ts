@@ -82,7 +82,9 @@ export function tintGround(
 ): THREE.Color {
   const { dryness, mottle } = groundNoise(x, z);
   out.lerp(DRY_TURF, dryness * dryStrength);
-  const shade = 1 + mottle * 0.13 - occlusion * 0.34;
+  // Carries the variation the texture no longer does. This is a world-space
+  // field, so it never repeats however far the ground runs.
+  const shade = 1 + mottle * 0.17 - occlusion * 0.34;
   out.multiplyScalar(Math.max(0.25, shade));
   return out;
 }

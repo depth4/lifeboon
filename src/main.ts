@@ -227,10 +227,12 @@ class App {
     const profiles = new RoadProfiles(world.roads, world.terrain);
     world.terrain.gradeStreets(profiles.corridors(world.roads, world.norm));
 
+
     // Where the buildings shut the ground in. Every surface that meets the
     // earth is shaded with this, which is what makes a wall look like it is
     // standing on the ground rather than passing through it.
-    const occlusion = new OcclusionField(world.buildings, world.radius);
+    const corridors = profiles.corridors(world.roads, world.norm);
+    const occlusion = new OcclusionField(world.buildings, world.radius, corridors);
 
     this.groundMeshes = buildGround(
       world.areas, world.radius, world.seed, world.terrain,
@@ -256,7 +258,10 @@ class App {
 
     this.hud.setLoading('Planting trees, hanging lamps…', 0.87);
     await nextFrame();
-    this.props = buildProps(this.groundMeshes.treeSpots, world.roads, world.seed, world.terrain);
+    this.props = buildProps(
+      this.groundMeshes.treeSpots.concat(this.roadMeshes.treeSpots),
+      world.roads, world.seed, world.terrain, world.radius, occlusion,
+    );
     this.worldGroup.add(this.props.group);
 
     this.hud.setLoading('Mapping walkable routes…', 0.92);

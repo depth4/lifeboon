@@ -15,6 +15,7 @@
  */
 
 import type { Building, Vec2 } from '../world/types';
+import type { StreetCorridor } from '../terrain/heightfield';
 
 /** Grid spacing. Fine enough to resolve a gap between two houses. */
 const CELL_M = 3;
@@ -27,20 +28,29 @@ const BLUR_PASSES = 3;
 
 export class OcclusionField {
   private readonly grid: Float32Array;
+  /**
+   * Where the ground is already spoken for — under a building or under a
+   * street. Unblurred and separate from the shading, because it answers a
+   * different question: not "how dark is it here" but "may something be
+   * planted here", which is what deciding where trees and shrubs go needs.
+   */
+  private readonly blocked: Uint8Array;
   private readonly cols: number;
   private readonly rows: number;
   private readonly originX: number;
   private readonly originZ: number;
 
-  constructor(buildings: Building[], radius: number) {
+  constructor(buildings: Building[], radius: number, corridors: StreetCorridor[] = []) {
     const span = radius * 2.2;
     this.cols = Math.max(8, Math.ceil(span / CELL_M) + 1);
     this.rows = this.cols;
     this.originX = -span / 2;
     this.originZ = -span / 2;
     this.grid = new Float32Array(this.cols * this.rows);
+    this.blocked = new Uint8Array(this.cols * this.rows);
 
     for (const b of buildings) this.stamp(b.ring, b.holes);
+    for (const c of corridors) this.blockCorridor(c);
     for (let i = 0; i < BLUR_PASSES; i++) this.blur();
 
     // A footprint's own cells come back from the blur well below 1, which
@@ -66,8 +76,62 @@ export class OcclusionField {
     return top + (bottom - top) * tz;
   }
 
+  /** True where a building or a street already occupies the ground. */
+  isBlocked(x: number, z: number): boolean {
+    const c = Math.round((x - this.originX) / CELL_M);
+    const r = Math.round((z - this.originZ) / CELL_M);
+    if (c < 0 || r < 0 || c >= this.cols || r >= this.rows) return false;
+    return this.blocked[r * this.cols + c] === 1;
+  }
+
   private stamp(ring: Vec2[], holes: Vec2[][]): void {
     this.paint(ring, holes, 1);
+    this.blockRing(ring);
+  }
+
+  private blockRing(ring: Vec2[]): void {
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const [x, z] of ring) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+    // A metre of clearance, so nothing is planted hard against a wall.
+    const pad = 1;
+    const c0 = Math.max(0, Math.floor((minX - pad - this.originX) / CELL_M));
+    const c1 = Math.min(this.cols - 1, Math.ceil((maxX + pad - this.originX) / CELL_M));
+    const r0 = Math.max(0, Math.floor((minZ - pad - this.originZ) / CELL_M));
+    const r1 = Math.min(this.rows - 1, Math.ceil((maxZ + pad - this.originZ) / CELL_M));
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) this.blocked[r * this.cols + c] = 1;
+    }
+  }
+
+  private blockCorridor(corridor: StreetCorridor): void {
+    const reach = corridor.halfWidth + corridor.blend;
+    const pts = corridor.points;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, az] = pts[i];
+      const [bx, bz] = pts[i + 1];
+      const c0 = Math.max(0, Math.floor((Math.min(ax, bx) - reach - this.originX) / CELL_M));
+      const c1 = Math.min(this.cols - 1, Math.ceil((Math.max(ax, bx) + reach - this.originX) / CELL_M));
+      const r0 = Math.max(0, Math.floor((Math.min(az, bz) - reach - this.originZ) / CELL_M));
+      const r1 = Math.min(this.rows - 1, Math.ceil((Math.max(az, bz) + reach - this.originZ) / CELL_M));
+      const segLen2 = (bx - ax) ** 2 + (bz - az) ** 2;
+      if (segLen2 < 1e-9) continue;
+      for (let r = r0; r <= r1; r++) {
+        const z = this.originZ + r * CELL_M;
+        for (let c = c0; c <= c1; c++) {
+          const x = this.originX + c * CELL_M;
+          let t = ((x - ax) * (bx - ax) + (z - az) * (bz - az)) / segLen2;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const px = ax + (bx - ax) * t;
+          const pz = az + (bz - az) * t;
+          if (Math.hypot(x - px, z - pz) <= reach) this.blocked[r * this.cols + c] = 1;
+        }
+      }
+    }
   }
 
   private reinforce(ring: Vec2[], holes: Vec2[][]): void {

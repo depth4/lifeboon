@@ -67,6 +67,9 @@ and the city came out as floating slabs.
 | Road surface | `world/roadprofile.ts` is the single source. Profiles are computed **once, on un-graded ground**, and shared by the renderer, the grading and the car. Recompute one afterwards and you get a road built on a road. |
 | Terrain grid | Elevation arrives at 20-30 m. `refinedTo(4 m)` before grading, and the ground mesh's core spacing is derived from `terrain.resolution` — the core spans **2 × radius**, so `cells = 2·radius / (CORE_FRACTION · resolution)`. Getting that factor wrong leaves the mesh ramping over features the field resolves sharply. |
 | Grip | One number, `availableGrip()`. Driving, braking and cornering all spend from it (friction circle). Never add a second grip constant. |
+| Surface colour | Every material that touches the earth comes from `render/palette.ts` and is varied by the same world-space noise. **Little contrast between materials, real variation within each.** A surface painted one flat value reads as plastic whatever the geometry is. |
+| Textures | A texture may only carry detail *finer than its own tile*. Anything at the tile's scale repeats visibly across open ground. Larger variation belongs in vertex colours, which are sampled in world space and never repeat. |
+| Triangle budget | Instanced props multiply: a canopy's triangle count is paid once per tree. 6 600 trees at 540 triangles was 3.6 M — more than the whole rest of the city. Measure `renderer.info.render.triangles` after any change to an instanced mesh. |
 
 ## Environment
 
@@ -80,6 +83,10 @@ and the city came out as floating slabs.
   It renders at well under 1 fps. **Do not measure simulation behaviour by
   wall-clock time in that browser** — step the simulation by hand from
   `page.evaluate` instead. This cost a whole debugging detour once.
+  **SwiftShader draws no shadows at all.** Everything is configured and the
+  shadow map is allocated; nothing appears. Judging shadow work from a
+  sandbox screenshot is impossible — check the triangle counts and the light
+  parameters, and have the user look at the real thing.
 - `window.lifeboon` exposes the running app for probing from the console. The
   useful probes are `world.terrain.heightAt/slopeAt`, `roadIndex.nearest`, and
   raycasting straight down onto a named mesh to ask what was actually drawn.

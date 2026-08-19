@@ -19,6 +19,9 @@ import { facadeTexture, roofTexture, windowLightTexture, TILE_METRES } from './t
 /** Metres covered by one tile of the roof texture. */
 const ROOF_UV_M = 1.6;
 
+/** Height of the base course, in metres. */
+const PLINTH_M = 0.9;
+
 /** Base wall colours per building type, varied per building. */
 const WALL_PALETTE: Record<BuildingKind, [number, number][]> = {
   residential: [[0xd8cec0, 0xbfae99], [0xc9b8a8, 0xa89684], [0xd5d0c8, 0xb4ada2]],
@@ -283,11 +286,29 @@ export function buildBuildingMeshes(
         // The wall starts at the skirt, below ground, so a sloping site shows
         // masonry rather than a triangle of daylight.
         const wallBase = b.minHeight > 0 ? y0 : skirt;
+
+        // Split the wall at the top of the plinth.
+        //
+        // Almost every building has a base course in a different material —
+        // render, stone, painted concrete — and it is darker than the wall
+        // above it because it collects the weather and the traffic spray. It
+        // is also the thing that makes a building look planted rather than
+        // dropped: an unbroken face from eaves to grass reads as a cut-out.
+        const plinthTop = Math.min(y0 + PLINTH_M, y1 - 0.5);
+        const vPlinth = (plinthTop - floor) / TILE_METRES;
+
         wallPos.push(
-          p0[0], wallBase, p0[1], p1[0], y1, p1[1], p1[0], wallBase, p1[1],
-          p0[0], wallBase, p0[1], p0[0], y1, p0[1], p1[0], y1, p1[1],
+          p0[0], wallBase, p0[1], p1[0], plinthTop, p1[1], p1[0], wallBase, p1[1],
+          p0[0], wallBase, p0[1], p0[0], plinthTop, p0[1], p1[0], plinthTop, p1[1],
         );
-        wallUv.push(u0, v0, u1, v1, u1, v0, u0, v0, u0, v1, u1, v1);
+        wallUv.push(u0, v0, u1, vPlinth, u1, v0, u0, v0, u0, vPlinth, u1, vPlinth);
+        for (let k = 0; k < 6; k++) wallColor.push(wr * 0.72, wg * 0.71, wb * 0.7);
+
+        wallPos.push(
+          p0[0], plinthTop, p0[1], p1[0], y1, p1[1], p1[0], plinthTop, p1[1],
+          p0[0], plinthTop, p0[1], p0[0], y1, p0[1], p1[0], y1, p1[1],
+        );
+        wallUv.push(u0, vPlinth, u1, v1, u1, vPlinth, u0, vPlinth, u0, v1, u1, v1);
         for (let k = 0; k < 6; k++) wallColor.push(wr, wg, wb);
       }
     }

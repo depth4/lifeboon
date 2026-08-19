@@ -204,6 +204,7 @@ export function asphaltTexture(): THREE.Texture {
   const rng = new Rng(31);
 
   const grain = fractal(SIZE, [2, 5, 13], [0.5, 0.3, 0.2], 11);
+  // Kept weak: anything at the scale of the tile tiles visibly on a long road.
   const patch = fractal(SIZE, [70, 170], [0.45, 0.55], 23);
 
   const img = ctx.createImageData(SIZE, SIZE);
@@ -211,7 +212,7 @@ export function asphaltTexture(): THREE.Texture {
     // Multiplied against the vertex colour, so this is a lightness field
     // around 1 rather than a colour: 0.82 to 1.10 is a strong-looking road
     // without the texture fighting the material underneath it.
-    const v = 0.82 + grain[i] * 0.24 + (patch[i] - 0.5) * 0.1;
+    const v = 0.84 + grain[i] * 0.2 + (patch[i] - 0.5) * 0.04;
     const n = Math.round(Math.min(1, v) * 255);
     img.data[i * 4] = n;
     img.data[i * 4 + 1] = n;
@@ -305,14 +306,18 @@ export function pavingTexture(): THREE.Texture {
 export function groundTexture(): THREE.Texture {
   const SIZE = 512;
   const { c, ctx } = canvas(SIZE);
+  // Only detail finer than the tile itself.
+  //
+  // A texture repeats; a noise field sampled at world position does not. Put
+  // anything at the scale of the tile into the texture and it shows up as a
+  // grid across a field — which is exactly what a low camera over open ground
+  // showed. So the texture carries clumps and the *colour* carries everything
+  // larger, out of the same field the roads and the land cover use.
   const clump = fractal(SIZE, [4, 9, 22], [0.4, 0.35, 0.25], 5);
-  const broad = fractal(SIZE, [60, 150], [0.5, 0.5], 61);
 
   const img = ctx.createImageData(SIZE, SIZE);
   for (let i = 0; i < SIZE * SIZE; i++) {
-    // Wider swing than asphalt: grass is far more uneven than a laid surface,
-    // and this is most of what stops a lawn being a flat green rectangle.
-    const v = 0.78 + clump[i] * 0.3 + (broad[i] - 0.5) * 0.16;
+    const v = 0.84 + clump[i] * 0.22;
     const lift = Math.min(1, v);
     img.data[i * 4] = Math.round(lift * 250);
     img.data[i * 4 + 1] = Math.round(Math.min(1, v * 1.03) * 255);

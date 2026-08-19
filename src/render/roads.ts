@@ -67,6 +67,8 @@ const SURFACE_COLOR: Record<RoadClass, number> = {
 
 export interface RoadMeshes {
   group: THREE.Group;
+  /** Where a street tree stands, in the verge, clear of every junction. */
+  treeSpots: Array<{ x: number; z: number; scale: number }>;
   dispose(): void;
 }
 
@@ -299,6 +301,12 @@ export function buildRoadMeshes(
   const markPos: number[] = [];
   const markUv: number[] = [];
   const markCol: number[] = [];
+  const treeSpots: RoadMeshes['treeSpots'] = [];
+  let treeSeed = 0x9e3779b9;
+  const treeRand = () => {
+    treeSeed = (Math.imul(treeSeed, 1664525) + 1013904223) >>> 0;
+    return treeSeed / 4294967296;
+  };
 
   // Paint is not white. Thermoplastic that has been on a road for a winter is
   // a warm off-grey, and rendering it at full white was another reason every
@@ -383,6 +391,56 @@ export function buildRoadMeshes(
       prevRight = railRight;
     }
 
+    // Street trees, standing in the verge.
+    //
+    // A town without them is the giveaway that a city was generated rather
+    // than built: real streets are lined with trees almost everywhere people
+    // live, and OpenStreetMap records almost none of them, so they have to be
+    // put where the norm says they go. The verge is where they go — that is
+    // most of what a verge is for — and they stop at junctions, where the
+    // paving they stand in stops too.
+    const vergeWidth = norm.verge[road.cls];
+    if (road.drivable && vergeWidth >= 1.4 && !road.bridge && road.cls !== 'service') {
+      const stand = road.width / 2 + norm.kerbWidth + vergeWidth * 0.55;
+      const SPACING = 13;
+      let carry = treeRand() * SPACING;
+      for (let i = 0; i < segments; i++) {
+        const [x0, z0] = line.points[i];
+        const [x1, z1] = line.points[i + 1];
+        const dx = x1 - x0;
+        const dz = z1 - z0;
+        const len = Math.hypot(dx, dz);
+        if (len < 0.01) continue;
+        const nx = dz / len;
+        const nz = -dx / len;
+        let t = carry;
+        while (t < len) {
+          const d = line.distances[i] + t;
+          // Clear of the junction by a tree's own width as well as the
+          // crossing's: a trunk planted right on the corner of an intersection
+          // stands in the middle of the other road's carriageway.
+          const CLEAR = 5;
+          if (!inSpans(spans.sides, d) &&
+              !inSpans(spans.sides, d - CLEAR) &&
+              !inSpans(spans.sides, d + CLEAR)) {
+            const f = t / len;
+            const side = treeRand() < 0.5 ? 1 : -1;
+            // Not every gap has a tree in it: a street planted on a perfect
+            // grid reads as wallpaper.
+            if (treeRand() > 0.22) {
+              treeSpots.push({
+                x: x0 + dx * f + nx * stand * side,
+                z: z0 + dz * f + nz * stand * side,
+                scale: 0.85 + treeRand() * 0.5,
+              });
+            }
+          }
+          t += SPACING * (0.75 + treeRand() * 0.5);
+        }
+        carry = Math.max(0, t - len);
+      }
+    }
+
     // A dashed centre line on roads big enough to have one. Paint stops at a
     // junction: running a lane line through a crossroads is not what is on the
     // ground anywhere.
@@ -457,6 +515,7 @@ export function buildRoadMeshes(
 
   return {
     group,
+    treeSpots,
     dispose() {
       for (const g of geoms) g.dispose();
       surfaceMat.dispose();
@@ -609,6 +668,8 @@ export function buildRailwayMeshes(railways: Railway[], terrain: Terrain): RoadM
 
   return {
     group,
+    // Railways are not planted with street trees.
+    treeSpots: [],
     dispose() {
       for (const g of geoms) g.dispose();
       mat.dispose();

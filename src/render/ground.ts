@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import type { AreaFeature, AreaKind, Vec2, Waterway } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
+import { fbm } from '../core/noise';
 import { groundTexture } from './textures';
 import { emitRibbon, offsetPolyline } from './roads';
 import type { OcclusionField } from './occlusion';
@@ -261,6 +262,7 @@ export function buildGround(
         scratch.lerp(ROCK, Math.min(1, (slope - 0.32) / 0.4));
       }
       tintGround(scratch, x, z, occlusion?.at(x, z) ?? 0);
+      countryside(scratch, x, z, radius);
       colors[i * 3] = scratch.r;
       colors[i * 3 + 1] = scratch.g;
       colors[i * 3 + 2] = scratch.b;
@@ -475,6 +477,44 @@ function drapeTriangle(
 }
 
 const DRAPE_TINT = new THREE.Color();
+
+/**
+ * Beyond the city, the ground is farmland rather than lawn.
+ *
+ * Inside the loaded area the variation has streets and buildings to break it
+ * up. Outside there is nothing at all, and the same gentle mottling that reads
+ * as a lawn between two houses reads as a billiard table when it runs
+ * unbroken to the horizon. Real country is parcelled: fields of different
+ * crops, in different states, with hard edges between them. This is a coarse
+ * imitation of that — bands wide enough to be fields, quantised so they have
+ * edges — faded in from the boundary so it never touches the city itself.
+ */
+function countryside(out: THREE.Color, x: number, z: number, radius: number): void {
+  const d = Math.hypot(x, z);
+  const t = Math.min(1, Math.max(0, (d - radius * 0.9) / (radius * 0.8)));
+  if (t <= 0) return;
+
+  // fbm is not uniform over [-1, 1]: measured, it has a standard deviation of
+  // 0.275 and only 15% of the ground is past 0.4. Quantising it raw put nearly
+  // half the countryside in the same parcel and the rest one step away, so the
+  // fields came out almost the colour of each other. Scaling to unit deviation
+  // first is what makes the parcels distinct.
+  const q = fbm(x * 0.72 + 5100, z * 1.35 - 2400, 320) * 3.4;
+  const step = Math.max(-1, Math.min(1, Math.round(q) / 2));
+  const crop = fbm(x - 9100, z + 3300, 130);
+  out.lerp(FIELD_A, Math.max(0, step) * 0.7 * t);
+  out.lerp(FIELD_B, Math.max(0, -step) * 0.62 * t);
+
+  // The margin between two fields — a hedge, a ditch, a track — is what makes
+  // farmland read as farmland rather than as one large lawn. It is a darker
+  // line wherever the parcel function crosses from one step to the next.
+  const toEdge = Math.abs(q - Math.round(q));
+  const hedge = Math.max(0, 1 - toEdge / 0.07);
+  out.multiplyScalar((1 + crop * 0.1 * t) * (1 - hedge * 0.3 * t));
+}
+
+const FIELD_A = new THREE.Color(0x9a9264);
+const FIELD_B = new THREE.Color(0x6c7a4a);
 
 function lowestUnder(ring: Vec2[], terrain: Terrain): number {
   let min = Infinity;

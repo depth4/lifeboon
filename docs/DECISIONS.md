@@ -51,6 +51,23 @@ than letting the file rot.
 | Grass hanging over the river | `carveTo` cut the bed to full depth right up to the outline, so the bank was a vertical wall and no ground mesh could follow it (4.8 m of daylight measured at the water's edge) | The bed shelves up to meet the bank over 8 m, via a chamfer distance transform on the water mask. Line waterways get a parabolic channel for the same reason. |
 | The city as a square slab on a billiard table | `heightAt` clamped to the edge outside the loaded area, so the surroundings were four flat quadrants at the corner heights joined by ruled ramps — measured at exactly 17.06 m from 1 km out to the horizon in one direction | Invent the surroundings: release the edge sample towards the region's mean and add three octaves of value noise, ramped in from zero at the boundary so no measured sample is ever contradicted. Amplitude comes from the relief the city itself has. |
 
+## Settled: making it look like a place
+
+| Problem | What it turned out to be | Fix |
+|---|---|---|
+| "Город выглядит как багованная каша" | Correct geometry rendered as flat colour is still flat colour. Every material was one value, and the values were far apart and saturated, so a grass verge beside a road read as a painted stripe. | One palette (`render/palette.ts`), one world-space noise field, sampled by every surface that touches the earth. Little contrast between materials, real variation within each. |
+| Surfaces looked like plastic at every distance | The procedural textures were per-pixel white noise, which averages to a flat tone as soon as more than one texel lands in a pixel — so they did nothing at all | Rebuilt from octaves of value noise with the features the eye judges scale by: aggregate and cracks, slab joints, grass clumps, courses of roof tile. |
+| Ground texture invisible | `repeat` was `radius/6` against UVs of metres/40 — a tile every 27 cm | One tile every four metres. |
+| Asphalt had no grain, kerbs had no scale | Strip UVs ran 0..1 across the width, so one tile stretched over a whole carriageway and squeezed into 15 cm of kerb face | Both UV axes in metres. |
+| A visible grid across open country | The turf texture carried variation at the scale of its own tile, which is exactly what repeats | A texture may only carry detail finer than its tile. Everything larger moved to vertex colours, which are world-space and never repeat. |
+| Buildings intersected the ground rather than standing on it | Nothing darkened where a wall shut the light out | `render/occlusion.ts`: buildings and streets stamped into a coarse grid, blurred, sampled per vertex. Also gives "is this ground free" for planting. |
+| No contact shadows anywhere | Shadow `normalBias` was 0.35 m — larger than a kerb | 0.045 m. The shadow map spans ~180 m at eye level over 2048 texels. |
+| A town of flat slabs | Every roof was a flat polygon at wall height | Small rectangular footprints get a hipped roof at 30° on their own minimum-area bounding box; flat roofs get a parapet and coping; everything gets an eave or an edge. A plan filling under 74% of its box keeps a flat roof rather than getting a wrong one. |
+| Roofs at 45° | `rise = halfSpan` is a 45° pitch, not 30° | `rise = halfSpan · tan 30°`. |
+| Nothing grew anywhere | OSM records parks and almost no individual trees, so a city drawn from the data alone has bare ground between its buildings | Street trees stand in the verge at the spacing the norm implies, clear of junctions; the rest of the free ground is planted at a density the noise field decides. 576 trees → ~6 600. |
+| 9.3 M triangles a frame | Canopies at 540 triangles each, six thousand times over | One subdivided lobe and two coarse ones: 120. Back to 3.7 M. |
+| Countryside stayed one flat green | `fbm` has a standard deviation of 0.275, not 1: quantising it raw put half the ground in one parcel and the rest one step away | Scale to unit deviation before quantising. Fields now differ, with a darker margin where two meet. |
+
 ## Settled: the car
 
 | Decision | Reasoning |
