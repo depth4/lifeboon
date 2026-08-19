@@ -30,6 +30,14 @@
       <div class="place">
         <span class="place-name" id="place-name">—</span>
         <span class="badge" id="source-badge">—</span>
+        <!--
+          The build stamp lives here, in plain sight, and not only inside the
+          About panel where it was. A stale cache and a fix that did not work
+          look exactly alike, and the only way to tell them apart is to read
+          which build is running — so it has to be readable without opening
+          anything.
+        -->
+        <span class="build-tag" id="build-tag" title="Running build">—</span>
       </div>
       <form class="search" id="search-form" autocomplete="off">
         <input

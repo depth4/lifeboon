@@ -58,6 +58,7 @@ export class Hud {
   private readonly aboutAttrib = $('about-attrib');
   private readonly aboutAudit = $('about-audit');
   private readonly aboutBuild = $('about-build');
+  private readonly buildTag = $('build-tag');
 
   private readonly clockTime = $('clock-time');
   private readonly clockDay = $('clock-day');
@@ -91,6 +92,7 @@ export class Hud {
 
   constructor(private readonly cb: HudCallbacks) {
     this.aboutBuild.textContent = __BUILD_STAMP__;
+    this.buildTag.textContent = __BUILD_STAMP__;
     this.bindSpeeds();
     this.bindModes();
     this.bindSearch();
