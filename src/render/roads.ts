@@ -10,10 +10,10 @@ import * as THREE from 'three';
 import type { Railway, Road, RoadClass, Vec2 } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
 import {
-  LAYER_HEIGHT as RAIL_LAYER_HEIGHT,
   ROAD_SURFACE_Y,
   bridgeProfile,
   gradedProfile,
+  isUnderground,
   roadSurfaceProfile,
 } from '../world/roadprofile';
 import { asphaltTexture } from './textures';
@@ -171,6 +171,8 @@ export function buildRoadMeshes(roads: Road[], terrain: Terrain): RoadMeshes {
 
   for (const road of roads) {
     if (road.points.length < 2) continue;
+    // Underpasses and metro lines are below the streets, not on them.
+    if (isUnderground(road)) continue;
     const half = road.width / 2;
     const profile = roadSurfaceProfile(road, terrain);
 
@@ -300,16 +302,17 @@ export function buildRailwayMeshes(railways: Railway[], terrain: Terrain): RoadM
 
   for (const line of railways) {
     if (line.points.length < 2) continue;
-    if (line.tunnel) continue; // Underground track is not visible from here.
+    // Underground track is not visible from here — and `layer` alone never
+    // lifted anything, so an elevated line has to say `bridge=yes` to fly.
+    if (isUnderground(line) || line.kind === 'subway') continue;
 
-    const yBase = line.layer * RAIL_LAYER_HEIGHT;
     const tracks = Math.max(1, Math.min(6, line.tracks));
     // Rail tolerates far less gradient than a road, so its profile is smoothed
     // harder and allowed to stray further from the ground — which is precisely
     // why real lines run in cuttings and on embankments.
     const profile = line.bridge
       ? bridgeProfile(line.points, terrain, SURFACE_Y, line.layer)
-      : gradedProfile(line.points, terrain, SURFACE_Y + yBase, 4);
+      : gradedProfile(line.points, terrain, SURFACE_Y, 4);
 
     // Trams run embedded in the carriageway, not on a ballast bed — laying
     // gravel down the middle of a city street is the wrong picture entirely.

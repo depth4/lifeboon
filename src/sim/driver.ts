@@ -47,18 +47,16 @@ const STEER_RATE = 2.6;
 /** How fast they centre themselves when the driver lets go. */
 const STEER_RETURN_RATE = 3.4;
 
-/**
- * Share of total grip left for cornering while the car is also accelerating or
- * braking. A proper friction circle would compute the remainder exactly; this
- * flat allowance is the honest simplification, and it is documented rather
- * than hidden.
- */
-const CORNERING_GRIP_SHARE = 0.85;
-
 /** Rolling resistance off the tarmac, as a multiple of the road figure. */
 const OFFROAD_ROLLING = 3.2;
-/** Grip off the tarmac, as a fraction of the road figure. */
-const OFFROAD_GRIP = 0.62;
+/**
+ * Grip off the tarmac, as a fraction of the road figure.
+ *
+ * This used to be 0.62 *and* the surface was separately downgraded a step for
+ * the longitudinal model, which counted the same penalty twice: drifting a
+ * metre wide in a corner fell off a cliff you could feel. One penalty now.
+ */
+const OFFROAD_GRIP = 0.72;
 /** How far from a centreline still counts as being on the road, beyond half-width. */
 const ROAD_EDGE_TOLERANCE = 1.2;
 
@@ -195,6 +193,7 @@ export class DrivenVehicle {
 
     const grip = availableGrip(this.spec, this.condition, this.surface)
       * (onRoad ? 1 : OFFROAD_GRIP);
+    const totalGrip = grip * GRAVITY;
 
     // --- gearbox direction --------------------------------------------------
     // Reverse only engages once the car has effectively stopped, which is both
@@ -227,7 +226,7 @@ export class DrivenVehicle {
       // Gravity resists whichever way you are travelling, so reversing up the
       // same hill is the same fight.
       grade: this.grade * this.direction,
-      surface: onRoad ? this.surface : worseSurface(this.surface),
+      surface: this.surface,
       dt,
     });
     this.spinning = result.wheelspin;
@@ -241,9 +240,23 @@ export class DrivenVehicle {
     // A locked wheel does not steer.
     const steerable = controls.handbrake ? 0 : this.steerAngle;
 
-    // Grip limit on the corner: a = v² tan(δ) / L must stay under µg.
+    // Grip limit on the corner: a = v² tan(δ) / L must stay under what the
+    // tyres have left.
+    //
+    // The friction circle: a tyre has one grip budget and cornering, driving
+    // and braking all spend from it. Standing on the throttle or the brake
+    // genuinely costs you turn-in; coasting gives the whole budget back. This
+    // replaces a flat 15% cornering tax that applied even when the car was
+    // doing nothing else, and which made the thing feel like it refused to
+    // turn at all.
     const v = this.state.speed;
-    const maxLateral = grip * GRAVITY * CORNERING_GRIP_SHARE;
+    const longitudinalUse = Math.min(totalGrip, Math.max(
+      result.tractiveForce / spec.massKg,
+      brake * spec.brakeDecelMs2 * (0.5 + 0.5 * this.condition.brakes),
+    ));
+    const maxLateral = Math.sqrt(
+      Math.max(0.2, totalGrip * totalGrip - longitudinalUse * longitudinalUse),
+    );
     let usedSteer = steerable;
     const demanded = (v * v * Math.abs(Math.tan(steerable))) / this.spec.wheelbaseM;
     this.understeering = false;
@@ -364,11 +377,6 @@ export class DrivenVehicle {
     }
     return false;
   }
-}
-
-/** Off the road, treat the going as one step worse than the weather says. */
-function worseSurface(surface: Surface): Surface {
-  return surface === 'dry' ? 'wet' : surface === 'wet' ? 'snow' : surface;
 }
 
 function clamp(v: number, min: number, max: number): number {

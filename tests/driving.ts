@@ -13,6 +13,7 @@ import { RoadIndex } from '../src/sim/roadindex';
 import { CITY_MICROCAR } from '../src/sim/vehicles';
 import { CONDITION_NEW, GRAVITY, availableGrip } from '../src/sim/vehicle';
 import { FlatTerrain } from '../src/terrain/heightfield';
+import { ROAD_SURFACE_Y, isUnderground, roadSurfaceProfile } from '../src/world/roadprofile';
 import type { Road, Vec2 } from '../src/world/types';
 
 let failures = 0;
@@ -76,6 +77,37 @@ console.log('--- road lookup ---');
   // The renderer lifts road surfaces clear of the ground; the car must agree.
   check('reports the drawn surface height, not the bare ground',
     onTop !== null && onTop.surfaceY > 0.2 && onTop.surfaceY < 0.4, onTop?.surfaceY);
+}
+
+/* ------------------------------------------------------------- layering */
+
+console.log('\n--- what layer means ---');
+{
+  const flat = new FlatTerrain();
+  const line: Vec2[] = [[0, 0], [50, 0], [100, 0]];
+  const at = (over: Partial<Road>) => roadSurfaceProfile(road('x', line, over), flat);
+
+  // The bug this guards: `layer` is a stacking order saying which way crosses
+  // over which, not an altitude. Reading it as height put every layered street
+  // five metres in the air — invisible in a small town, catastrophic in Tokyo.
+  check('a plain street sits on the ground',
+    at({}).every((h) => near(h, ROAD_SURFACE_Y, 1e-6)), at({})[1]);
+  check('layer=1 alone does not lift a street',
+    at({ layer: 1 }).every((h) => near(h, ROAD_SURFACE_Y, 1e-6)), at({ layer: 1 })[1]);
+  check('nor does layer=3',
+    at({ layer: 3 }).every((h) => near(h, ROAD_SURFACE_Y, 1e-6)), at({ layer: 3 })[1]);
+
+  // A bridge is the one thing that really is off the ground, and it comes back
+  // down to meet the road at both ends.
+  const deck = at({ bridge: true, layer: 1 });
+  check('a bridge arches', deck[1] > deck[0] + 2, deck);
+  check('and lands flush at both ends',
+    near(deck[0], ROAD_SURFACE_Y, 1e-6) && near(deck[2], ROAD_SURFACE_Y, 1e-6), deck);
+
+  check('tunnels count as underground', isUnderground({ tunnel: true, layer: 0 }));
+  check('so does a negative layer', isUnderground({ tunnel: false, layer: -1 }));
+  check('a surface street does not', !isUnderground({ tunnel: false, layer: 0 }));
+  check('and neither does an elevated one', !isUnderground({ tunnel: false, layer: 2 }));
 }
 
 /* ------------------------------------------------------ straight running */
@@ -160,7 +192,9 @@ console.log('\n--- grip limits the corner, not a speed curve ---');
    * Full lock at a set speed: the lateral acceleration the car actually
    * achieves, alongside what pure steering geometry would have demanded.
    */
-  function corneringAt(speedMs: number, surface: 'dry' | 'ice', onRoad = true) {
+  function corneringAt(
+    speedMs: number, surface: 'dry' | 'ice', onRoad = true, pedal: Partial<DriveControls> = {},
+  ) {
     const car = new DrivenVehicle(
       CITY_MICROCAR, new FlatTerrain(), onRoad ? pad : null, null,
     );
@@ -168,10 +202,10 @@ console.log('\n--- grip limits the corner, not a speed curve ---');
     car.placeAt(0, 0, 0);
     car.state.speed = speedMs;
     // Let the steering reach full lock, then measure over a short window.
-    drive(car, 1, controls({ steer: 1 }));
+    drive(car, 1, controls({ steer: 1, ...pedal }));
     const h0 = car.heading;
     const seconds = 0.5;
-    drive(car, seconds, controls({ steer: 1 }));
+    drive(car, seconds, controls({ steer: 1, ...pedal }));
 
     const v = car.state.speed;
     const achieved = (Math.abs(car.heading - h0) / seconds) * v;
@@ -179,9 +213,9 @@ console.log('\n--- grip limits the corner, not a speed curve ---');
     return { achieved, geometric, understeer: car.telemetry().understeer };
   }
 
-  const grip = availableGrip(CITY_MICROCAR, CONDITION_NEW, 'dry');
-  const ceiling = grip * GRAVITY * 0.85;
-  console.log(`  the tyres are good for ${ceiling.toFixed(2)} m/s² of cornering`);
+  // Coasting, the whole friction budget is available for cornering.
+  const ceiling = availableGrip(CITY_MICROCAR, CONDITION_NEW, 'dry') * GRAVITY;
+  console.log(`  the tyres are good for ${ceiling.toFixed(2)} m/s² all told`);
 
   // Below the limit the car goes exactly where the front wheels point.
   const slow = corneringAt(3, 'dry');
@@ -201,6 +235,12 @@ console.log('\n--- grip limits the corner, not a speed curve ---');
   console.log(`  25 m/s on ice: gets ${icy.achieved.toFixed(2)} m/s²`);
   check('and ice caps it far lower', icy.achieved < fast.achieved * 0.3,
     { icy: icy.achieved, dry: fast.achieved });
+
+  // The friction circle: grip spent stopping is grip not available to turn.
+  const braking = corneringAt(25, 'dry', true, { brake: 1 });
+  console.log(`  25 m/s while braking hard: gets ${braking.achieved.toFixed(2)} m/s²`);
+  check('braking hard eats into the grip left for the corner',
+    braking.achieved < fast.achieved * 0.85, { braking: braking.achieved, coasting: fast.achieved });
 
   const offRoad = corneringAt(25, 'dry', false);
   console.log(`  25 m/s off the tarmac: gets ${offRoad.achieved.toFixed(2)} m/s²`);

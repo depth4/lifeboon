@@ -21,6 +21,7 @@ import { Population, type Agent } from './sim/population';
 import { RoadIndex } from './sim/roadindex';
 import { DrivenVehicle, type DriveControls } from './sim/driver';
 import { CITY_MICROCAR } from './sim/vehicles';
+import { isUnderground } from './world/roadprofile';
 import { SceneRig } from './render/scene';
 import { CameraController } from './render/camera';
 import { buildBuildingMeshes, BuildingIndex, type BuildingMeshes } from './render/buildings';
@@ -240,7 +241,12 @@ class App {
     this.graph = NavGraph.build(world.roads);
     // Streets a car may use, indexed so the simulation can ask what is under
     // the wheels sixty times a second.
-    this.roadIndex = new RoadIndex(world.roads.filter((r) => r.drivable), world.terrain);
+    // Underground ways are not drawn, so the car must not feel tarmac over
+    // them either — otherwise you get grip and a street name while visibly
+    // driving across a field.
+    this.roadIndex = new RoadIndex(
+      world.roads.filter((r) => r.drivable && !isUnderground(r)), world.terrain,
+    );
     this.hud.setDriveAvailable(this.roadIndex.roadCount > 0);
 
     this.hud.setLoading('Moving people in…', 0.97);

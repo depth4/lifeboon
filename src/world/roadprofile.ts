@@ -106,11 +106,36 @@ export function bridgeProfile(
 
 /**
  * Surface height at every point of a way: one number per entry in
- * `road.points`. Bridges arch, tunnels stay close to the ground they burrow
- * under, everything else is graded terrain.
+ * `road.points`. Bridges arch; everything else follows graded terrain.
+ *
+ * `layer` deliberately does NOT lift anything here. This is the single most
+ * misread tag in OpenStreetMap: it is a *stacking order* saying which way
+ * passes over which where they cross, not an altitude. Only `bridge=yes` means
+ * a way is physically off the ground, and only for the length of the bridge.
+ *
+ * Treating layer as height put every `layer=1` street five metres in the air.
+ * In a lightly-mapped town almost nothing carries the tag and it never showed;
+ * in Tokyo, where a large share of the network is layered, it turned the city
+ * into a pile of floating slabs. The layer value is still used, but only where
+ * it means something physical: genuinely stacked bridge decks, below.
  */
 export function roadSurfaceProfile(road: Road, terrain: Terrain): number[] {
   if (road.bridge) return bridgeProfile(road.points, terrain, ROAD_SURFACE_Y, road.layer);
-  if (road.tunnel) return gradedProfile(road.points, terrain, ROAD_SURFACE_Y, 0.5);
-  return gradedProfile(road.points, terrain, ROAD_SURFACE_Y + road.layer * LAYER_HEIGHT);
+  return gradedProfile(road.points, terrain, ROAD_SURFACE_Y);
+}
+
+/**
+ * Whether a way is underground and should simply not be drawn.
+ *
+ * A tunnel used to be drawn as an ordinary road pressed against the surface,
+ * which meant every underpass and every metro line was painted on top of the
+ * streets above it. A negative layer without a tunnel tag is the same thing
+ * mapped differently — underground car parks, subways, service passages.
+ *
+ * Not drawing them leaves a road that visibly disappears into a portal and
+ * comes out the other side, which is honest: we do not model what is under the
+ * ground, so we should not pretend to.
+ */
+export function isUnderground(way: { tunnel: boolean; layer: number }): boolean {
+  return way.tunnel || way.layer < 0;
 }
