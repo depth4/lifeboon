@@ -17,18 +17,37 @@ import type { AreaFeature, AreaKind, Vec2, Waterway } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
 import { groundTexture } from './textures';
 import { emitRibbon, offsetPolyline } from './roads';
+import type { OcclusionField } from './occlusion';
+import {
+  CEMETERY, EARTH, FOREST_FLOOR, HARDSTANDING, PARK_TURF, PAVING, PITCH,
+  ROCK, SAND, TURF, WATER, tintGround, tintHard,
+} from './palette';
 
-const AREA_COLOR: Record<AreaKind, number> = {
-  water: 0x3d6b8a,
-  park: 0x7fa05c,
-  forest: 0x5f7f47,
-  grass: 0x8db067,
-  sand: 0xd9cba3,
-  pitch: 0x6f9558,
-  cemetery: 0x7d9464,
-  parking: 0x76736e,
-  pavement: 0x9a958c,
+/**
+ * Land cover, deliberately close to the open ground it sits on.
+ *
+ * These used to be a spread of saturated greens a long way apart from each
+ * other and from the base ground, which made every polygon boundary a visible
+ * edge — a park read as a green rectangle painted on a different green. Real
+ * land cover differs in tone, not in hue: the boundary of a park is a fence
+ * and a change of mowing, not a change of colour.
+ */
+const AREA_COLOR: Record<AreaKind, THREE.Color> = {
+  water: WATER,
+  park: PARK_TURF,
+  forest: FOREST_FLOOR,
+  grass: TURF,
+  sand: SAND,
+  pitch: PITCH,
+  cemetery: CEMETERY,
+  parking: HARDSTANDING,
+  pavement: PAVING,
 };
+
+/** Which kinds are soft ground, and so get the full turf variation. */
+const SOFT: ReadonlySet<AreaKind> = new Set<AreaKind>([
+  'park', 'forest', 'grass', 'pitch', 'cemetery',
+]);
 
 /**
  * Height above the ground surface, in metres.
@@ -65,10 +84,6 @@ const AREA_LIFT: Record<AreaKind, number> = {
 const NESTING_STEP = 0.04;
 const MAX_NESTING = 3;
 
-/** Ground colours blended by steepness: turf on the flat, bare earth on slopes. */
-const FLAT_GROUND = new THREE.Color(0x8a9166);
-const STEEP_GROUND = new THREE.Color(0x8a7a63);
-const CLIFF_GROUND = new THREE.Color(0x7d756c);
 
 /**
  * Grid resolution of the base mesh, per side.
@@ -187,12 +202,17 @@ export function buildGround(
   waterLevels: Map<string, number> = new Map(),
   waterways: Waterway[] = [],
   flowLevels: Map<string, number[]> = new Map(),
+  occlusion: OcclusionField | null = null,
 ): GroundMeshes {
   const group = new THREE.Group();
   group.name = 'ground';
 
   const texture = groundTexture();
-  texture.repeat.set(radius / 6, radius / 6);
+  // The UVs below are metres/40, so a repeat of 10 puts one tile every four
+  // metres. It used to be radius/6 — about 150 — which tiled the speckle every
+  // 27 cm: far below a pixel at any distance you would look from, so it
+  // averaged to flat grey and the ground had no detail at all.
+  texture.repeat.set(10, 10);
 
   const geoms: THREE.BufferGeometry[] = [];
   const mats: THREE.Material[] = [];
@@ -229,15 +249,18 @@ export function buildGround(
       positions[i * 3 + 1] = h;
       positions[i * 3 + 2] = z;
 
-      // Steepness decides the surface: grass, then earth, then bare rock.
+      // Steepness decides the surface: turf, then bare earth, then rock —
+      // and then the noise field decides how dry and how mottled it is here,
+      // which is what stops a square kilometre of open ground being one value.
       const slope = terrain.slopeAt(x, z);
-      scratch.copy(FLAT_GROUND);
+      scratch.copy(TURF);
       if (slope > 0.08) {
-        scratch.lerp(STEEP_GROUND, Math.min(1, (slope - 0.08) / 0.22));
+        scratch.lerp(EARTH, Math.min(1, (slope - 0.08) / 0.22));
       }
       if (slope > 0.32) {
-        scratch.lerp(CLIFF_GROUND, Math.min(1, (slope - 0.32) / 0.4));
+        scratch.lerp(ROCK, Math.min(1, (slope - 0.32) / 0.4));
       }
+      tintGround(scratch, x, z, occlusion?.at(x, z) ?? 0);
       colors[i * 3] = scratch.r;
       colors[i * 3 + 1] = scratch.g;
       colors[i * 3 + 2] = scratch.b;
@@ -299,7 +322,8 @@ export function buildGround(
     const tri = triangulate(area.ring, area.holes);
     if (!tri) return;
     const isWater = area.kind === 'water';
-    color.set(AREA_COLOR[area.kind]);
+    color.copy(AREA_COLOR[area.kind]);
+    const soft = SOFT.has(area.kind);
     const lift = AREA_LIFT[area.kind] + depths[areaIndex] * NESTING_STEP;
 
     // Standing water is level, and its surface goes exactly where the bed was
@@ -324,7 +348,7 @@ export function buildGround(
       if (isWater) {
         waterPos.push(p0[0], waterLevel, p0[1], p1[0], waterLevel, p1[1], p2[0], waterLevel, p2[1]);
       } else {
-        drapeTriangle(p0, p1, p2, terrain, lift, landPos, landCol, color, 0);
+        drapeTriangle(p0, p1, p2, terrain, lift, landPos, landCol, color, soft, occlusion, 0);
       }
     }
 
@@ -335,7 +359,7 @@ export function buildGround(
   });
 
   // --- rivers and streams, which are lines rather than areas --------------
-  const flowColor = new THREE.Color(AREA_COLOR.water);
+  const flowColor = AREA_COLOR.water.clone();
   for (const flow of waterways) {
     if (flow.tunnel || flow.points.length < 2) continue;
     const profile = flowLevels.get(flow.id)
@@ -372,7 +396,7 @@ export function buildGround(
     geom.computeVertexNormals();
     geom.computeBoundingSphere();
     const mat = new THREE.MeshStandardMaterial({
-      color: AREA_COLOR.water,
+      color: AREA_COLOR.water.clone(),
       roughness: 0.15,
       metalness: 0.35,
       transparent: true,
@@ -411,6 +435,8 @@ function drapeTriangle(
   pos: number[],
   col: number[],
   color: THREE.Color,
+  soft: boolean,
+  occlusion: OcclusionField | null,
   depth: number,
 ): void {
   const longest = Math.max(
@@ -423,10 +449,10 @@ function drapeTriangle(
     const ab: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
     const bc: Vec2 = [(b[0] + c[0]) / 2, (b[1] + c[1]) / 2];
     const ca: Vec2 = [(c[0] + a[0]) / 2, (c[1] + a[1]) / 2];
-    drapeTriangle(a, ab, ca, terrain, lift, pos, col, color, depth + 1);
-    drapeTriangle(ab, b, bc, terrain, lift, pos, col, color, depth + 1);
-    drapeTriangle(ca, bc, c, terrain, lift, pos, col, color, depth + 1);
-    drapeTriangle(ab, bc, ca, terrain, lift, pos, col, color, depth + 1);
+    drapeTriangle(a, ab, ca, terrain, lift, pos, col, color, soft, occlusion, depth + 1);
+    drapeTriangle(ab, b, bc, terrain, lift, pos, col, color, soft, occlusion, depth + 1);
+    drapeTriangle(ca, bc, c, terrain, lift, pos, col, color, soft, occlusion, depth + 1);
+    drapeTriangle(ab, bc, ca, terrain, lift, pos, col, color, soft, occlusion, depth + 1);
     return;
   }
 
@@ -435,8 +461,20 @@ function drapeTriangle(
     b[0], terrain.heightAt(b[0], b[1]) + lift, b[1],
     c[0], terrain.heightAt(c[0], c[1]) + lift, c[1],
   );
-  for (let k = 0; k < 3; k++) col.push(color.r, color.g, color.b);
+  // Per vertex, not per polygon: a park the size of a district painted in one
+  // value is exactly the flatness this is here to remove, and sampling the
+  // same field the open ground uses means the two share their mottling across
+  // the boundary instead of meeting at a visible edge.
+  for (const p of [a, b, c]) {
+    DRAPE_TINT.copy(color);
+    const ao = occlusion?.at(p[0], p[1]) ?? 0;
+    if (soft) tintGround(DRAPE_TINT, p[0], p[1], ao);
+    else tintHard(DRAPE_TINT, p[0], p[1], ao);
+    col.push(DRAPE_TINT.r, DRAPE_TINT.g, DRAPE_TINT.b);
+  }
 }
+
+const DRAPE_TINT = new THREE.Color();
 
 function lowestUnder(ring: Vec2[], terrain: Terrain): number {
   let min = Infinity;

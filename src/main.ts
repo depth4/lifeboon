@@ -28,6 +28,7 @@ import { buildBuildingMeshes, BuildingIndex, type BuildingMeshes } from './rende
 import { buildRailwayMeshes, buildRoadMeshes, type RoadMeshes } from './render/roads';
 import { buildGround, type GroundMeshes } from './render/ground';
 import { buildProps, type Props } from './render/props';
+import { OcclusionField } from './render/occlusion';
 import { PeopleRenderer } from './render/people';
 import { CarModel } from './render/car';
 import { Hud } from './ui/hud';
@@ -226,15 +227,22 @@ class App {
     const profiles = new RoadProfiles(world.roads, world.terrain);
     world.terrain.gradeStreets(profiles.corridors(world.roads, world.norm));
 
+    // Where the buildings shut the ground in. Every surface that meets the
+    // earth is shaded with this, which is what makes a wall look like it is
+    // standing on the ground rather than passing through it.
+    const occlusion = new OcclusionField(world.buildings, world.radius);
+
     this.groundMeshes = buildGround(
       world.areas, world.radius, world.seed, world.terrain,
-      water.areaLevels, world.waterways, water.flowLevels,
+      water.areaLevels, world.waterways, water.flowLevels, occlusion,
     );
     this.worldGroup.add(this.groundMeshes.group);
 
     this.hud.setLoading('Paving the streets…', 0.7);
     await nextFrame();
-    this.roadMeshes = buildRoadMeshes(world.roads, world.terrain, profiles, world.norm);
+    this.roadMeshes = buildRoadMeshes(
+      world.roads, world.terrain, profiles, world.norm, occlusion,
+    );
     this.worldGroup.add(this.roadMeshes.group);
 
     this.railMeshes = buildRailwayMeshes(world.railways, world.terrain);

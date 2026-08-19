@@ -14,7 +14,10 @@ import * as THREE from 'three';
 import type { Building, BuildingKind, Vec2 } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
 import { groundRangeUnder } from '../terrain/heightfield';
-import { facadeTexture, windowLightTexture, TILE_METRES } from './textures';
+import { facadeTexture, roofTexture, windowLightTexture, TILE_METRES } from './textures';
+
+/** Metres covered by one tile of the roof texture. */
+const ROOF_UV_M = 1.6;
 
 /** Base wall colours per building type, varied per building. */
 const WALL_PALETTE: Record<BuildingKind, [number, number][]> = {
@@ -78,6 +81,147 @@ function lerpColor(a: number, b: number, t: number, out: THREE.Color): THREE.Col
   return out.copy(ca).lerp(cb, t);
 }
 
+
+/**
+ * The smallest rectangle that contains a footprint, at any angle.
+ *
+ * A roof has to be built on *something*, and a pitched roof needs a direction
+ * to run its ridge along. Real houses are close enough to rectangles that the
+ * minimum-area box round the footprint gives that direction, and comparing the
+ * box's area with the footprint's says how safe the assumption is: a plan that
+ * fills its box is a rectangle, one that fills two thirds of it is an L and
+ * gets a flat roof instead of a wrong one.
+ *
+ * Tested against every edge direction, which is the standard result that the
+ * minimum box always shares an edge with the convex hull — and with a handful
+ * of vertices per building it is cheaper than computing the hull first.
+ */
+interface Obb {
+  cx: number;
+  cz: number;
+  /** Unit vector along the long axis. */
+  ux: number;
+  uz: number;
+  halfLong: number;
+  halfShort: number;
+  area: number;
+}
+
+function orientedBox(ring: Vec2[]): Obb | null {
+  if (ring.length < 3) return null;
+  let best: Obb | null = null;
+
+  for (let i = 0; i < ring.length; i++) {
+    const p0 = ring[i];
+    const p1 = ring[(i + 1) % ring.length];
+    const dx = p1[0] - p0[0];
+    const dz = p1[1] - p0[1];
+    const len = Math.hypot(dx, dz);
+    if (len < 0.2) continue;
+    const ax = dx / len;
+    const az = dz / len;
+
+    let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+    for (const [x, z] of ring) {
+      const a = x * ax + z * az;
+      const b = -x * az + z * ax;
+      if (a < minA) minA = a;
+      if (a > maxA) maxA = a;
+      if (b < minB) minB = b;
+      if (b > maxB) maxB = b;
+    }
+    const spanA = maxA - minA;
+    const spanB = maxB - minB;
+    const area = spanA * spanB;
+    if (best && area >= best.area) continue;
+
+    const midA = (minA + maxA) / 2;
+    const midB = (minB + maxB) / 2;
+    const longer = spanA >= spanB;
+    best = {
+      cx: midA * ax - midB * az,
+      cz: midA * az + midB * ax,
+      ux: longer ? ax : -az,
+      uz: longer ? az : ax,
+      halfLong: (longer ? spanA : spanB) / 2,
+      halfShort: (longer ? spanB : spanA) / 2,
+      area,
+    };
+  }
+  return best;
+}
+
+/** Signed area of a ring; its sign is the winding. */
+function signedArea(ring: Vec2[]): number {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += (ring[j][0] + ring[i][0]) * (ring[j][1] - ring[i][1]);
+  }
+  return a / 2;
+}
+
+/**
+ * A vertical band around a ring — the fascia under an eave, or the outside of
+ * a parapet. Winding is taken from the ring's own orientation, because getting
+ * it backwards makes the band vanish under backface culling rather than look
+ * wrong, which is the failure this codebase has hit twice.
+ */
+function emitBand(
+  pos: number[],
+  col: number[],
+  uv: number[],
+  ring: Vec2[],
+  yTop: number,
+  yBottom: number,
+  r: number,
+  g: number,
+  b: number,
+  reference: number,
+): void {
+  const order = Math.sign(signedArea(ring)) === Math.sign(reference)
+    ? ring
+    : ring.slice().reverse();
+  let travelled = 0;
+  for (let i = 0; i < order.length; i++) {
+    const p0 = order[i];
+    const p1 = order[(i + 1) % order.length];
+    const len = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+    const u0 = travelled / ROOF_UV_M;
+    const u1 = (travelled + len) / ROOF_UV_M;
+    travelled += len;
+    const v0 = yBottom / ROOF_UV_M;
+    const v1 = yTop / ROOF_UV_M;
+    pos.push(
+      p0[0], yBottom, p0[1], p1[0], yTop, p1[1], p1[0], yBottom, p1[1],
+      p0[0], yBottom, p0[1], p0[0], yTop, p0[1], p1[0], yTop, p1[1],
+    );
+    uv.push(u0, v0, u1, v1, u1, v0, u0, v0, u0, v1, u1, v1);
+    for (let k = 0; k < 6; k++) col.push(r, g, b);
+  }
+}
+
+/**
+ * Which buildings get a pitched roof.
+ *
+ * Nearly every small building in a European or Russian town has one, and
+ * drawing them all as flat slabs is most of why the city read as a warehouse
+ * estate seen from above. Tall blocks, big industrial sheds and anything whose
+ * plan is not roughly a rectangle keep the flat roof they really have.
+ */
+const PITCHED_KINDS: ReadonlySet<BuildingKind> = new Set<BuildingKind>([
+  'residential', 'other', 'education', 'religious', 'retail', 'civic',
+]);
+
+function wantsPitch(b: Building, box: Obb | null): boolean {
+  if (!box || !PITCHED_KINDS.has(b.kind)) return false;
+  if (b.area > 1400 || b.height > 22) return false;
+  if (box.halfShort < 2) return false;
+  // How much of its own bounding box the plan fills. An L-shaped or curved
+  // footprint scores low, and a ridge laid across one would float over the
+  // parts of the plan it does not cover.
+  return b.area / box.area > 0.74;
+}
+
 export function buildBuildingMeshes(
   buildings: Building[],
   terrain: Terrain,
@@ -88,6 +232,7 @@ export function buildBuildingMeshes(
 
   const roofPos: number[] = [];
   const roofColor: number[] = [];
+  const roofUv: number[] = [];
 
   const colorScratch = new THREE.Color();
   const roofScratch = new THREE.Color();
@@ -148,28 +293,121 @@ export function buildBuildingMeshes(
     }
 
     // --- roof ------------------------------------------------------------
-    const contour = b.ring.map(([x, z]) => new THREE.Vector2(x, z));
-    const holes = b.holes.map((h) => h.map(([x, z]) => new THREE.Vector2(x, z)));
-    let faces: number[][];
-    try {
-      faces = THREE.ShapeUtils.triangulateShape(contour, holes);
-    } catch {
-      continue; // Self-intersecting footprint; the walls alone still read fine.
-    }
-    const flat = contour.concat(...holes);
-    for (const face of faces) {
-      const a = flat[face[0]];
-      const c0 = flat[face[1]];
-      const c1 = flat[face[2]];
-      if (!a || !c0 || !c1) continue;
-      pushTriangle(
-        roofPos,
-        a.x, y1, a.y,
-        c0.x, y1, c0.y,
-        c1.x, y1, c1.y,
-        true,
+    const box = orientedBox(b.ring);
+    const ringWinding = signedArea(b.ring);
+
+    if (wantsPitch(b, box) && box) {
+      // A hipped roof on the footprint's own bounding box: a ridge down the
+      // long axis, two slopes falling to the eaves and a hip closing each end.
+      // Hipped rather than gabled because it needs no end walls, which keeps
+      // it correct on a plan that is only approximately the box it was built
+      // from — a gable would leave a triangle of daylight at each end.
+      const OVERHANG = 0.38;
+      const halfL = box.halfLong + OVERHANG;
+      const halfW = box.halfShort + OVERHANG;
+      // A 30 degree pitch, which is what most of Europe builds: the rise is
+      // the half-span times tan(30). Using the half-span itself, which is what
+      // this did first, gives 45 degrees and turns every house into a tent.
+      const rise = Math.min(halfW * 0.577, 4.2);
+      const eaveY = y1;
+      const ridgeY = y1 + rise;
+
+      const at = (u: number, v: number): Vec2 => [
+        box.cx + box.ux * u - box.uz * v,
+        box.cz + box.uz * u + box.ux * v,
+      ];
+      const c00 = at(-halfL, -halfW);
+      const c10 = at(halfL, -halfW);
+      const c11 = at(halfL, halfW);
+      const c01 = at(-halfL, halfW);
+      const rA = at(-halfL + halfW, 0);
+      const rB = at(halfL - halfW, 0);
+
+      // Roof UVs run in the box's own frame, so courses lie across the slope
+      // on every face instead of following the compass.
+      const uvOf = (p: Vec2): [number, number] => {
+        const dx = p[0] - box.cx;
+        const dz = p[1] - box.cz;
+        return [
+          (dx * box.ux + dz * box.uz) / ROOF_UV_M,
+          (-dx * box.uz + dz * box.ux) / ROOF_UV_M,
+        ];
+      };
+      const slope = (
+        a: Vec2, ay: number, bb: Vec2, by: number, cc: Vec2, cy: number,
+        tone: number,
+      ) => {
+        const before = roofPos.length;
+        pushTriangle(roofPos, a[0], ay, a[1], bb[0], by, bb[1], cc[0], cy, cc[1], true);
+        // pushTriangle may have swapped two vertices to fix the winding, so
+        // the UVs are read back off the positions it actually wrote rather
+        // than assumed from the arguments.
+        for (let k = 0; k < 3; k++) {
+          const [u, v] = uvOf([roofPos[before + k * 3], roofPos[before + k * 3 + 2]]);
+          roofUv.push(u, v);
+        }
+        for (let k = 0; k < 3; k++) roofColor.push(rr * tone, rg * tone, rb * tone);
+      };
+
+      // Two long slopes, split into triangles, and a hip at each end. The two
+      // long faces get slightly different tones: on any real roof one side has
+      // had more sun and more weather than the other.
+      slope(c00, eaveY, c10, eaveY, rB, ridgeY, 1.0);
+      slope(c00, eaveY, rB, ridgeY, rA, ridgeY, 1.0);
+      slope(c11, eaveY, c01, eaveY, rA, ridgeY, 0.9);
+      slope(c11, eaveY, rA, ridgeY, rB, ridgeY, 0.9);
+      slope(c01, eaveY, c00, eaveY, rA, ridgeY, 0.95);
+      slope(c10, eaveY, c11, eaveY, rB, ridgeY, 0.95);
+
+      // The eave: without the fascia the roof is a sheet of paper laid on the
+      // walls, and its edge is the line the eye reads a house's shape from.
+      emitBand(
+        roofPos, roofColor, roofUv, [c00, c10, c11, c01], eaveY, eaveY - 0.22,
+        rr * 0.68, rg * 0.68, rb * 0.68, ringWinding,
       );
-      for (let k = 0; k < 3; k++) roofColor.push(rr, rg, rb);
+    } else {
+      const contour = b.ring.map(([x, z]) => new THREE.Vector2(x, z));
+      const holes = b.holes.map((h) => h.map(([x, z]) => new THREE.Vector2(x, z)));
+      let faces: number[][];
+      try {
+        faces = THREE.ShapeUtils.triangulateShape(contour, holes);
+      } catch {
+        continue; // Self-intersecting footprint; the walls alone still read fine.
+      }
+      const flat = contour.concat(...holes);
+      // A flat roof still has an upstand round its edge — a parapet — and
+      // drawing the deck flush with the wall top is what made every block look
+      // like a slab cut off with a knife.
+      const PARAPET = b.height > 6 ? 0.55 : 0.3;
+      const deck = y1 + PARAPET * 0.35;
+      for (const face of faces) {
+        const a = flat[face[0]];
+        const c0 = flat[face[1]];
+        const c1 = flat[face[2]];
+        if (!a || !c0 || !c1) continue;
+        const before = roofPos.length;
+        pushTriangle(
+          roofPos,
+          a.x, deck, a.y,
+          c0.x, deck, c0.y,
+          c1.x, deck, c1.y,
+          true,
+        );
+        for (let k = 0; k < 3; k++) {
+          roofUv.push(roofPos[before + k * 3] / ROOF_UV_M, roofPos[before + k * 3 + 2] / ROOF_UV_M);
+        }
+        // Roof decks are gravel and bitumen, not the colour of roof tiles.
+        for (let k = 0; k < 3; k++) roofColor.push(rr * 0.86, rg * 0.86, rb * 0.86);
+      }
+      emitBand(
+        roofPos, roofColor, roofUv, b.ring, y1 + PARAPET, y1 - 0.05,
+        wr * 0.92, wg * 0.92, wb * 0.92, ringWinding,
+      );
+      // The coping on top of the parapet catches the light along the skyline.
+      emitBand(
+        roofPos, roofColor, roofUv, b.ring, y1 + PARAPET, y1 + PARAPET - 0.06,
+        wr * 1.06, wg * 1.06, wb * 1.06, ringWinding,
+      );
     }
   }
 
@@ -193,13 +431,17 @@ export function buildBuildingMeshes(
     metalness: 0.02,
   });
 
+  const roofSkin = roofTexture();
+
   const roofGeom = new THREE.BufferGeometry();
   roofGeom.setAttribute('position', new THREE.Float32BufferAttribute(roofPos, 3));
+  roofGeom.setAttribute('uv', new THREE.Float32BufferAttribute(roofUv, 2));
   roofGeom.setAttribute('color', new THREE.Float32BufferAttribute(roofColor, 3));
   roofGeom.computeVertexNormals();
   roofGeom.computeBoundingSphere();
 
   const roofMat = new THREE.MeshStandardMaterial({
+    map: roofSkin,
     vertexColors: true,
     roughness: 0.95,
     metalness: 0,
@@ -226,6 +468,7 @@ export function buildBuildingMeshes(
       roofGeom.dispose();
       wallMat.dispose();
       roofMat.dispose();
+      roofSkin.dispose();
       facade.dispose();
       lights.dispose();
     },

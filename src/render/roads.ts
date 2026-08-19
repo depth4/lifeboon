@@ -31,7 +31,11 @@ import {
 } from '../world/roadprofile';
 import { streetSection, type StreetNorm, type StreetSurface } from '../world/street';
 import { inSpans, junctionSpans, spanCuts, spansFor, splitAt } from '../world/junctions';
-import { asphaltTexture, groundTexture } from './textures';
+import { asphaltTexture, groundTexture, pavingTexture } from './textures';
+import type { OcclusionField } from './occlusion';
+import {
+  KERB_FACE, KERB_TOP, MOWN_VERGE, PAVING, TURF, tintGround, tintHard,
+} from './palette';
 
 /**
  * Where the drawn surfaces sit.
@@ -60,13 +64,6 @@ const SURFACE_COLOR: Record<RoadClass, number> = {
   track: 0x77705f,
 };
 
-/**
- * Pavement has to read as pavement against bare ground (0x8a9166 in
- * render/ground.ts). The two used to differ by three points of blue, which is
- * invisible — keep a real gap here, and let the kerb's shaded face and its
- * cast shadow draw the edge.
- */
-const PAVEMENT_COLOR = 0xc0bcb4;
 
 export interface RoadMeshes {
   group: THREE.Group;
@@ -107,10 +104,19 @@ export function offsetPolyline(points: Vec2[], half: number): { left: Vec2[]; ri
       mx /= mLen;
       mz /= mLen;
     }
-    // Lengthen the mitre so the ribbon keeps its width through the corner,
-    // clamped so a sharp turn does not shoot a spike across the map.
+    // Lengthen the mitre so the ribbon keeps its width through the corner.
+    //
+    // The clamp has to be in metres, not as a ratio. A ratio of 2.5 is a
+    // reasonable 5 m on the edge of a carriageway and an absurd 13 m on a
+    // bridge parapet five metres out — which is exactly the arrowhead that
+    // grew out of every sharp bend on a bridge. Capping the *extension*
+    // instead pinches a hard corner slightly and never spikes.
     const cos = mx * pIn[0] + mz * pIn[1];
-    const scale = Math.min(2.5, 1 / Math.max(0.4, cos));
+    const maxExtra = 1.6;
+    const scale = Math.min(
+      1 + maxExtra / Math.max(Math.abs(half), 0.2),
+      1 / Math.max(0.35, cos),
+    );
     const ox = mx * half * scale;
     const oz = mz * half * scale;
     right[i] = [points[i][0] + ox, points[i][1] + oz];
@@ -184,15 +190,34 @@ interface Rail {
 function emitStrip(
   a: Rail,
   b: Rail,
-  color: THREE.Color,
+  colorA: THREE.Color,
+  colorB: THREE.Color,
+  soft: boolean,
+  occlusion: OcclusionField | null,
   pos: number[],
   uv: number[],
   col: number[],
   uvScale: number,
+  /** Distance across the street, in metres, at each rail. */
+  acrossA: number,
+  acrossB: number,
   skip: boolean[] | null = null,
 ): void {
   let travelled = 0;
   const n = Math.min(a.pts.length, b.pts.length);
+
+  // Six vertices per quad, each needing its own colour: which rail it came
+  // from decides the base tone, and where it is in the world decides the
+  // variation. A strip painted one flat value is what made a verge read as a
+  // stripe of paint rather than as the ground it is cut from.
+  const push = (x: number, z: number, base: THREE.Color) => {
+    STRIP_TINT.copy(base);
+    const ao = occlusion?.at(x, z) ?? 0;
+    if (soft) tintGround(STRIP_TINT, x, z, ao);
+    else tintHard(STRIP_TINT, x, z, ao);
+    col.push(STRIP_TINT.r, STRIP_TINT.g, STRIP_TINT.b);
+  };
+
   for (let i = 0; i < n - 1; i++) {
     const a0 = a.pts[i], a1 = a.pts[i + 1];
     const b0 = b.pts[i], b1 = b.pts[i + 1];
@@ -211,10 +236,23 @@ function emitStrip(
       a0[0], ay0, a0[1], b1[0], by1, b1[1], b0[0], by0, b0[1],
       a0[0], ay0, a0[1], a1[0], ay1, a1[1], b1[0], by1, b1[1],
     );
-    uv.push(0, v0, 1, v1, 1, v0, 0, v0, 0, v1, 1, v1);
-    for (let k = 0; k < 6; k++) col.push(color.r, color.g, color.b);
+    // Both axes in metres. Writing 0..1 across the strip instead — which is
+    // what this did — stretched one texture tile over the whole width of the
+    // carriageway and squeezed it into the 15 cm of a kerb face, so asphalt
+    // had no grain at any distance and paving had no scale at all.
+    const u0 = acrossA / uvScale;
+    const u1 = acrossB / uvScale;
+    uv.push(u0, v0, u1, v1, u1, v0, u0, v0, u0, v1, u1, v1);
+    push(a0[0], a0[1], colorA);
+    push(b1[0], b1[1], colorB);
+    push(b0[0], b0[1], colorB);
+    push(a0[0], a0[1], colorA);
+    push(a1[0], a1[1], colorA);
+    push(b1[0], b1[1], colorB);
   }
 }
+
+const STRIP_TINT = new THREE.Color();
 
 /** Which merged mesh a surface belongs to. Three materials cover the street. */
 type Bucket = 'asphalt' | 'paving' | 'soil';
@@ -225,26 +263,32 @@ const BUCKET_OF: Record<StreetSurface, Bucket> = {
   pavement: 'paving',
   verge: 'soil',
   batter: 'soil',
+  parapet: 'paving',
+  fascia: 'paving',
 };
 
 /**
- * Colour of each strip.
+ * Every strip is shaded across its width, not filled with one value.
  *
- * The kerb is two colours rather than one: its vertical face is in shade
- * whenever its top is in sun, and giving them the same value throws away the
- * only cue that says there is a step there at all.
+ * A real street is darker in the gutter than at the crown, because that is
+ * where the dirt collects; the kerb face is darker at its foot than at its
+ * top; the verge is worn where it meets the kerb and greener at the back. All
+ * of that costs nothing — the vertices are being written anyway — and it is
+ * the difference between a street and a diagram of one.
+ *
+ * The verge and the embankment come out of the shared ground palette, so they
+ * carry the same mottling as the grass they border. They used to be their own
+ * saturated green, which is what made every road look like it had been painted
+ * with margin lines.
  */
-const KERB_FACE_COLOR = 0x847f78;
-const KERB_TOP_COLOR = 0xa9a49b;
-const VERGE_COLOR = 0x86a862;
-/** Matches FLAT_GROUND in render/ground.ts, so the embankment ties in unseen. */
-const BATTER_COLOR = 0x8a9166;
+const shade = (c: THREE.Color, k: number) => c.clone().multiplyScalar(k);
 
 export function buildRoadMeshes(
   roads: Road[],
   terrain: Terrain,
   profiles: RoadProfiles,
   norm: StreetNorm,
+  occlusion: OcclusionField | null = null,
 ): RoadMeshes {
   const buckets: Record<Bucket, { pos: number[]; uv: number[]; col: number[] }> = {
     asphalt: { pos: [], uv: [], col: [] },
@@ -256,8 +300,10 @@ export function buildRoadMeshes(
   const markUv: number[] = [];
   const markCol: number[] = [];
 
-  const color = new THREE.Color();
-  const markColor = new THREE.Color(0xd8d2c4);
+  // Paint is not white. Thermoplastic that has been on a road for a winter is
+  // a warm off-grey, and rendering it at full white was another reason every
+  // street read as a diagram.
+  const markColor = new THREE.Color(0xb9b3a4);
 
   // Where streets cross, the paving has to stop; without this the verge runs
   // straight over the main road and the city grows grass across its junctions.
@@ -315,13 +361,23 @@ export function buildRoadMeshes(
       // A strip whose two edges sit at the same offset is a vertical face —
       // the kerb — and it is shaded darker than the flat top above it.
       const vertical = edge.offset === section[k - 1].offset;
-      color.set(pickColor(edge.surface, road.cls, vertical));
+      const [inner, outer] = stripColors(edge.surface, road.cls, vertical);
+      const soft = SOFT_SURFACE.has(edge.surface);
       const bucket = buckets[BUCKET_OF[edge.surface]];
-      const uvScale = edge.surface === 'carriageway' ? 8 : 4;
-      const skip = edge.surface === 'carriageway' ? skipCarriageway : skipSides;
+      const uvScale = UV_SCALE[edge.surface];
+      const skip = road.bridge
+        ? null
+        : edge.surface === 'carriageway' ? skipCarriageway : skipSides;
+      const acrossIn = section[k - 1].offset;
+      const acrossOut = edge.offset;
 
-      emitStrip(prevRight, railRight, color, bucket.pos, bucket.uv, bucket.col, uvScale, skip);
-      emitStrip(railLeft, prevLeft, color, bucket.pos, bucket.uv, bucket.col, uvScale, skip);
+      // Argument order is load-bearing: the first rail must be the one on the
+      // left of travel. On the right-hand side that is the inner rail; on the
+      // left-hand side it is the outer one, and the colours swap with it.
+      emitStrip(prevRight, railRight, inner, outer, soft, occlusion,
+        bucket.pos, bucket.uv, bucket.col, uvScale, acrossIn, acrossOut, skip);
+      emitStrip(railLeft, prevLeft, outer, inner, soft, occlusion,
+        bucket.pos, bucket.uv, bucket.col, uvScale, acrossOut, acrossIn, skip);
 
       prevLeft = railLeft;
       prevRight = railRight;
@@ -340,8 +396,8 @@ export function buildRoadMeshes(
   }
 
   const asphalt = asphaltTexture();
+  const paving = pavingTexture();
   const soil = groundTexture();
-  soil.repeat.set(1, 1);
 
   const group = new THREE.Group();
   group.name = 'roads';
@@ -353,7 +409,7 @@ export function buildRoadMeshes(
     metalness: 0,
   });
   const paveMat = new THREE.MeshStandardMaterial({
-    map: asphalt,
+    map: paving,
     vertexColors: true,
     roughness: 0.9,
     metalness: 0,
@@ -408,20 +464,62 @@ export function buildRoadMeshes(
       soilMat.dispose();
       markMat.dispose();
       asphalt.dispose();
+      paving.dispose();
       soil.dispose();
     },
   };
 }
 
-function pickColor(surface: StreetSurface, cls: RoadClass, vertical: boolean): number {
+/**
+ * The pair of colours a strip runs between: inner edge first, outer second.
+ * "Inner" means nearer the centre of the road on both sides, because the
+ * section is mirrored.
+ */
+function stripColors(
+  surface: StreetSurface,
+  cls: RoadClass,
+  vertical: boolean,
+): [THREE.Color, THREE.Color] {
   switch (surface) {
-    case 'carriageway': return SURFACE_COLOR[cls];
-    case 'kerb': return vertical ? KERB_FACE_COLOR : KERB_TOP_COLOR;
-    case 'pavement': return PAVEMENT_COLOR;
-    case 'verge': return VERGE_COLOR;
-    case 'batter': return BATTER_COLOR;
+    case 'carriageway': {
+      const asphalt = new THREE.Color(SURFACE_COLOR[cls]);
+      return [asphalt, shade(asphalt, 0.88)];
+    }
+    case 'kerb':
+      return vertical
+        ? [shade(KERB_FACE, 0.82), KERB_FACE]
+        : [KERB_TOP, shade(KERB_TOP, 0.96)];
+    case 'pavement':
+      return [PAVING, shade(PAVING, 0.95)];
+    case 'verge':
+      return [shade(MOWN_VERGE, 0.9), MOWN_VERGE];
+    case 'batter':
+      return [shade(MOWN_VERGE, 0.96), TURF];
+    case 'parapet':
+      return [shade(PAVING, 0.86), shade(PAVING, 1.02)];
+    case 'fascia':
+      // Concrete in permanent shade under its own deck, darkening downwards.
+      return [shade(PAVING, 0.78), shade(PAVING, 0.5)];
   }
 }
+
+/** Soft surfaces take the turf variation; hard ones take the quieter version. */
+const SOFT_SURFACE: ReadonlySet<StreetSurface> = new Set<StreetSurface>(['verge', 'batter']);
+
+/**
+ * Metres per texture tile, per surface. Asphalt is laid in wide passes and
+ * reads coarse; paving slabs are small; grass wants a tile fine enough that
+ * you cannot see it repeat from a car.
+ */
+const UV_SCALE: Record<StreetSurface, number> = {
+  carriageway: 3.2,
+  kerb: 0.8,
+  pavement: 1.1,
+  verge: 2.4,
+  batter: 2.4,
+  parapet: 1.4,
+  fascia: 2.2,
+};
 
 /**
  * Railways: a ballast bed with rails on top.

@@ -75,7 +75,7 @@ export class SceneRig {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
 
@@ -104,8 +104,13 @@ export class SceneRig {
     this.sun = new THREE.DirectionalLight(0xffffff, 2.6);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
-    this.sun.shadow.bias = -0.0006;
-    this.sun.shadow.normalBias = 0.35;
+    this.sun.shadow.bias = -0.0004;
+    // 0.35 m of normal bias pushed every shadow that far off whatever cast it,
+    // which at street scale means no contact shadow at all: a wall met the
+    // pavement in full sun and a 15 cm kerb cast nothing. The shadow map spans
+    // about 180 m at eye level over 2048 texels — under 9 cm each — so a few
+    // centimetres is all the bias the acne needs.
+    this.sun.shadow.normalBias = 0.045;
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
 

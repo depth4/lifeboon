@@ -13,6 +13,8 @@
  * around a world centred on zero.
  */
 
+import { fbm } from '../core/noise';
+
 export interface Terrain {
   /** Ground height at a projected point, in metres. */
   heightAt(x: number, z: number): number;
@@ -262,14 +264,39 @@ export class Heightfield implements Terrain {
     // and the heightfield at the water's edge, with grass hanging over the
     // river. Real banks shelve, so the bed is deepest in the middle and rises
     // to meet the bank — which the mesh can follow and which is also true.
-    const dist = new Float32Array(w * h);
+    const inside = new Uint8Array(w * h);
     for (let r = 0; r < h; r++) {
       const z = this.originZ + (r + r0) * this.resolution;
       for (let c = 0; c < w; c++) {
         const x = this.originX + (c + c0) * this.resolution;
-        dist[r * w + c] = pointInRing(x, z, ring) ? Infinity : 0;
+        if (pointInRing(x, z, ring)) inside[r * w + c] = 1;
       }
     }
+
+    // Carve one ring of samples *outside* the outline as well.
+    //
+    // The ground mesh interpolates between samples, so if the last carved
+    // sample sits on the outline itself the surface crosses the water plane
+    // somewhere inside the drawn polygon — and because that crossing wanders
+    // between one grid row and the next, the shoreline comes out as a row of
+    // green teeth biting into the water. Carving past the edge moves the
+    // crossing outside the polygon, where nothing is drawn over it.
+    const dilated = new Uint8Array(w * h);
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        if (!inside[r * w + c]) continue;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const rr = r + dr, cc = c + dc;
+            if (rr < 0 || cc < 0 || rr >= h || cc >= w) continue;
+            dilated[rr * w + cc] = 1;
+          }
+        }
+      }
+    }
+
+    const dist = new Float32Array(w * h);
+    for (let i = 0; i < dist.length; i++) dist[i] = dilated[i] ? Infinity : 0;
     chamfer(dist, w, h);
 
     // The shelf runs about eight metres, or one sample if the water is
@@ -283,7 +310,10 @@ export class Heightfield implements Terrain {
         // Never quite zero, or the bed meets the water surface exactly at the
         // shoreline and the two fight for the same pixels along every bank.
         const t = Math.max(0.12, Math.min(1, d / shelf));
-        const bed = level - CARVE_DEPTH_M * t;
+        let bed = level - CARVE_DEPTH_M * t;
+        // Whatever the shelf says, anything actually under the drawn water has
+        // to be under it by a clear margin.
+        if (inside[r * w + c]) bed = Math.min(bed, level - 0.2);
         const i = (r + r0) * this.cols + (c + c0);
         if (this.data[i] > bed) {
           this.data[i] = bed;
@@ -551,46 +581,6 @@ export function smoothProfile(heights: number[], passes = 3): number[] {
     current = next;
   }
   return current;
-}
-
-/**
- * Value noise, hashed rather than tabulated so it costs no memory and gives
- * the same landscape every time the same city is loaded.
- */
-function hash2(ix: number, iz: number): number {
-  let h = Math.imul(ix, 374761393) + Math.imul(iz, 668265263);
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
-function valueNoise(x: number, z: number, wavelength: number): number {
-  const fx = x / wavelength;
-  const fz = z / wavelength;
-  const ix = Math.floor(fx);
-  const iz = Math.floor(fz);
-  let tx = fx - ix;
-  let tz = fz - iz;
-  // Smoothstep the interpolation, or the landscape shows the lattice it was
-  // built on as a grid of creases.
-  tx = tx * tx * (3 - 2 * tx);
-  tz = tz * tz * (3 - 2 * tz);
-
-  const a = hash2(ix, iz);
-  const b = hash2(ix + 1, iz);
-  const c = hash2(ix, iz + 1);
-  const d = hash2(ix + 1, iz + 1);
-  const top = a + (b - a) * tx;
-  const bottom = c + (d - c) * tx;
-  return top + (bottom - top) * tz;
-}
-
-/** Three octaves of rolling ground, centred on zero. */
-function fbm(x: number, z: number): number {
-  const n =
-    valueNoise(x, z, 1400) * 0.55 +
-    valueNoise(x + 811, z - 517, 520) * 0.3 +
-    valueNoise(x - 233, z + 907, 190) * 0.15;
-  return n * 2 - 1;
 }
 
 /**

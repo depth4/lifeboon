@@ -32,7 +32,9 @@ export type StreetSurface =
   | 'kerb'
   | 'verge'
   | 'pavement'
-  | 'batter';
+  | 'batter'
+  | 'parapet'
+  | 'fascia';
 
 /**
  * One edge of the cross-section.
@@ -161,6 +163,30 @@ export function streetSection(road: Road, norm: StreetNorm): StreetEdge[] {
   }
 
   const crown = norm.crossfall * half;
+
+  // A bridge has no ground beside it to tie into, so it must not be given the
+  // embankment that every other street gets. Left in, the batter runs from the
+  // deck down to whatever `heightAt` says — which over a river is the bed —
+  // and the crossing grows a pair of grass walls hanging in mid-air with a
+  // cliff at each end. What a deck has instead is a parapet and a fascia: a
+  // wall to stop you falling off, and the thickness of the structure below it.
+  if (road.bridge) {
+    const kerb = -crown + norm.kerbReveal;
+    const walkway = half + norm.kerbWidth + 1.2;
+    return [
+      { offset: 0, dy: 0, surface: 'carriageway' },
+      { offset: half, dy: -crown, surface: 'carriageway' },
+      { offset: half, dy: kerb, surface: 'kerb' },
+      { offset: half + norm.kerbWidth, dy: kerb, surface: 'kerb' },
+      { offset: walkway, dy: kerb, surface: 'pavement' },
+      // Inner face of the parapet, its coping, then the whole outside of the
+      // structure in one drop: parapet, deck edge and the slab beneath it.
+      { offset: walkway, dy: kerb + 0.95, surface: 'parapet' },
+      { offset: walkway + 0.28, dy: kerb + 0.95, surface: 'parapet' },
+      { offset: walkway + 0.28, dy: kerb - 0.95, surface: 'fascia' },
+    ];
+  }
+
   const edges: StreetEdge[] = [
     // The crown stands above the channel by the camber, so the carriageway
     // sheds water the way a built road does. The crown is the height the
