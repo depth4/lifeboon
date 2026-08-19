@@ -68,6 +68,20 @@ than letting the file rot.
 | 9.3 M triangles a frame | Canopies at 540 triangles each, six thousand times over | One subdivided lobe and two coarse ones: 120. Back to 3.7 M. |
 | Countryside stayed one flat green | `fbm` has a standard deviation of 0.275, not 1: quantising it raw put half the ground in one parcel and the rest one step away | Scale to unit deviation before quantising. Fields now differ, with a darker margin where two meet. |
 
+## Settled: streets that meet each other
+
+| Problem | What it turned out to be | Fix |
+|---|---|---|
+| Car sat half a wheel deep in ground the picture showed as pavement | `restingHeight` accepted the road's height only within `width/2 + 1.2` — the carriageway. One centimetre past the kerb it fell to `terrain.heightAt`, which under a street is `GRADE_DEPTH` below the crown. The corridor mesh was the only thing covering that cut, so the car fell into a trench it could see the far side of. | `RoadIndex` answers with `sectionHeightAt` for the whole built width and ramps down the embankment beyond it. The grip test still uses the carriageway, because a verge should feel like a verge. |
+| Strips of road hanging in the air at junctions | The junction mask removed the side strips — including the embankment, which is the only thing tying a corridor down to the earth | A flat pad is graded under every junction at the junction's own height, so there is nothing left to hang over. |
+| "Прямоугольные плато криво ложатся друг на друга" at crossings | Every way's profile was smoothed from the terrain independently, so two streets crossing could differ by tens of centimetres — and the ground was then graded to each in turn, strongest claim winning | Junctions are nodes now. Crossings within 6 m are one node with one height, weighted by road width so a main road sets the level and side streets come to meet it; each way is bent to arrive there, spread between its junctions and capped at 0.9 m. |
+
+**Still true, and structural:** the ground is a regular grid and a street is not.
+A corridor is about thirteen metres across on a 4.9 m mesh, so the mesh cannot
+follow the cut and pokes through the street edge here and there — measured at
+0.8% of samples, up to 37 cm. Patching the height query does not fix that; only
+a ground built as one continuous surface does. See the open question below.
+
 ## Settled: the car
 
 | Decision | Reasoning |
@@ -89,6 +103,7 @@ than letting the file rot.
 | Calibrating guessed building heights | Alapaevsk: 0% surveyed heights, 97% guessed by us. GHS-BUILT-H is a 100 m global raster that could calibrate the guess. Shares plumbing with the terrain tile loader. Not started. |
 | Bridge-to-road seam | Bridge ends use raw terrain; the connecting road uses the smoothed profile. They can differ by up to 0.6 m — a visible step at every bridge. Known, not fixed. The bridge is also the one way that is not graded, so a neighbouring street's fill can rise against its abutment. |
 | A long river carved to one level | `carveWaterways` takes the lowest ground around a water polygon's whole outline and cuts the entire thing to it. For a 1.9 km river crossing 50 m of relief that is a gorge, not a river. Line waterways already get a downhill profile; polygons need the same. **This is the largest remaining "стык".** |
+| **One ground surface instead of layers** | The ground is a regular grid; roads, kerbs, pavements and land cover are separate meshes laid over it, each tied down by its own embankment. That is why the grid can poke through a street, why a corridor edge can hang in the air where the embankment is interrupted, and why nothing that walks or drives can stand on a pavement without being told about it separately. The answer is a planar partition — junction polygons, carriageway polygons, kerb and verge bands, land cover, terrain filler — where every square metre belongs to exactly one polygon, triangulated with a constrained Delaunay triangulation so shared edges share vertices. Heights are decided on the street network first, so a junction has one height by construction. Not started. It is the largest single piece of work left and it deletes more than it adds. |
 | Junction shape | Paving now stops at a junction, but there are no corner radii, no splayed entries, no stop lines, and no junction polygon. The crossing reads correctly from above and blockily from the ground. |
 | Ground beyond the loaded area | Terrain is invented and continuous, but there is no land cover, no field pattern and no woodland out there — one flat colour to the horizon. |
 | Land cover coverage | Measured on the offline city: 13% of the loaded area falls inside any land-cover polygon, 33% inside a building. The remaining half is bare ground colour. Real OSM is usually worse. The user has authorised inventing it from norms; nothing is built yet. |

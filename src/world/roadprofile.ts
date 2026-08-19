@@ -13,6 +13,7 @@
 import type { StreetCorridor, Terrain } from '../terrain/heightfield';
 import { smoothProfile } from '../terrain/heightfield';
 import { gradedHalfWidth, streetSection, type StreetNorm } from './street';
+import { findCrossings, type Crossing } from './junctions';
 import type { Road, Vec2 } from './types';
 
 /** Height above ground per OSM layer, so stacked structures clear each other. */
@@ -191,12 +192,20 @@ export function isUnderground(way: { tunnel: boolean; layer: number }): boolean 
  */
 export class RoadProfiles {
   private readonly byId = new Map<string, number[]>();
+  /** Where streets meet, and the one height they all meet at. */
+  private readonly nodes: JunctionNode[] = [];
 
   constructor(roads: Road[], terrain: Terrain) {
     for (const road of roads) {
       if (road.points.length < 2) continue;
       this.byId.set(road.id, roadSurfaceProfile(road, terrain));
     }
+    this.nodes = levelToJunctions(roads, this.byId);
+  }
+
+  /** The junction nodes, for anything that needs to know where they are. */
+  get junctions(): readonly JunctionNode[] {
+    return this.nodes;
   }
 
   /** Surface height at every point of a way, or null if it was not indexed. */
@@ -237,6 +246,182 @@ export class RoadProfiles {
     // the first claim is the one that stands, so the bigger road goes first
     // and carries the side street across it rather than being dug through.
     out.sort((a, b) => b.halfWidth - a.halfWidth);
+
+    // A pad under every junction, flat and at the junction's own height.
+    //
+    // Without one, the ground at a crossroads is whatever the two corridors
+    // last wrote there, and the paving that ties each corridor down to the
+    // earth is exactly the paving that stops at a junction. The result is a
+    // corridor edge hanging a third of a metre over the ground with nothing
+    // under it — strips floating in the air, which is what they looked like.
+    // The pad puts the earth at street level across the whole junction, so
+    // there is nothing left to hang over.
+    for (const node of this.nodes) {
+      const level = [node.height, node.height];
+      out.push({
+        points: [[node.x - 0.1, node.z], [node.x + 0.1, node.z]],
+        halfWidth: node.radius,
+        blend: 3,
+        levels: level,
+        depth: GRADE_DEPTH,
+        shape: [[0, 0]],
+      });
+    }
     return out;
   }
+}
+
+/** A place where streets meet, and the height they all agree on there. */
+export interface JunctionNode {
+  x: number;
+  z: number;
+  height: number;
+  /** How far the flat pad reaches — the widest street that meets here. */
+  radius: number;
+}
+
+/** How far apart two crossings may be and still be the same junction. */
+const NODE_MERGE_M = 6;
+/** How far a street may be lifted or dropped to meet its junctions. */
+const MAX_LEVELLING_M = 0.9;
+
+/**
+ * Make every street that meets at a junction agree on the height there.
+ *
+ * Each way's profile was smoothed independently from the terrain, so two
+ * streets crossing at a point could differ by tens of centimetres — and then
+ * the ground was graded to each of them in turn, with the strongest claim
+ * winning. That is precisely a set of rectangular plateaus laid crookedly over
+ * one another, which is what a crossroads looked like: two roads at two
+ * heights with a step between them instead of a crossing.
+ *
+ * A junction is one place, so it gets one height, and every way that reaches
+ * it is bent to arrive there. The bend is spread between a way's junctions, so
+ * nothing kinks; and it is capped, so a junction can never drag a street
+ * somewhere the terrain will not carry it.
+ */
+function levelToJunctions(roads: Road[], profiles: Map<string, number[]>): JunctionNode[] {
+  const crossings = findCrossings(roads);
+  if (!crossings.length) return [];
+
+  // Cluster crossings by position: several ways meeting at one place produce
+  // one crossing per pair, and they are all the same junction.
+  const cellOf = (x: number, z: number) =>
+    `${Math.round(x / NODE_MERGE_M)},${Math.round(z / NODE_MERGE_M)}`;
+  const clusters = new Map<string, Crossing[]>();
+  for (const c of crossings) {
+    const key = cellOf(c.x, c.z);
+    let bucket = clusters.get(key);
+    if (!bucket) clusters.set(key, (bucket = []));
+    bucket.push(c);
+  }
+
+  const nodes: JunctionNode[] = [];
+  /** Per road: the height it must have at a distance along it. */
+  const targets = new Map<number, Array<{ at: number; height: number }>>();
+
+  const sampleAt = (road: Road, at: number): number | null => {
+    const profile = profiles.get(road.id);
+    if (!profile) return null;
+    let travelled = 0;
+    for (let i = 0; i < road.points.length - 1; i++) {
+      const len = Math.hypot(
+        road.points[i + 1][0] - road.points[i][0],
+        road.points[i + 1][1] - road.points[i][1],
+      );
+      if (at <= travelled + len || i === road.points.length - 2) {
+        const t = len < 1e-6 ? 0 : Math.max(0, Math.min(1, (at - travelled) / len));
+        return profile[i] + (profile[i + 1] - profile[i]) * t;
+      }
+      travelled += len;
+    }
+    return profile[profile.length - 1];
+  };
+
+  for (const bucket of clusters.values()) {
+    const members = new Map<number, number>();   // road index -> distance along
+    let sx = 0, sz = 0, radius = 0;
+    for (const c of bucket) {
+      members.set(c.roadA, c.atA);
+      members.set(c.roadB, c.atB);
+      sx += c.x;
+      sz += c.z;
+    }
+    const n = bucket.length;
+
+    let sum = 0;
+    let count = 0;
+    for (const [roadIndex, at] of members) {
+      const road = roads[roadIndex];
+      // A bridge deck is an arch tied to its abutments; it does not get bent
+      // to suit a road passing underneath it.
+      if (road.bridge) continue;
+      const h = sampleAt(road, at);
+      if (h === null) continue;
+      // Weighted by width: a main road decides the level of the crossing and
+      // the side street comes to meet it, not the other way about.
+      sum += h * road.width;
+      count += road.width;
+      radius = Math.max(radius, road.width / 2 + 4);
+    }
+    if (count === 0) continue;
+
+    const height = sum / count;
+    nodes.push({ x: sx / n, z: sz / n, height, radius });
+
+    for (const [roadIndex, at] of members) {
+      if (roads[roadIndex].bridge) continue;
+      let list = targets.get(roadIndex);
+      if (!list) targets.set(roadIndex, (list = []));
+      list.push({ at, height });
+    }
+  }
+
+  // Apply the corrections: a delta per junction, interpolated along the way.
+  for (const [roadIndex, list] of targets) {
+    const road = roads[roadIndex];
+    const profile = profiles.get(road.id);
+    if (!profile) continue;
+
+    const deltas = list
+      .map(({ at, height }) => {
+        const here = sampleAt(road, at);
+        if (here === null) return null;
+        const d = height - here;
+        return { at, delta: Math.max(-MAX_LEVELLING_M, Math.min(MAX_LEVELLING_M, d)) };
+      })
+      .filter((d): d is { at: number; delta: number } => d !== null)
+      .sort((a, b) => a.at - b.at);
+    if (!deltas.length) continue;
+
+    let travelled = 0;
+    for (let i = 0; i < road.points.length; i++) {
+      if (i > 0) {
+        travelled += Math.hypot(
+          road.points[i][0] - road.points[i - 1][0],
+          road.points[i][1] - road.points[i - 1][1],
+        );
+      }
+      profile[i] += deltaAt(deltas, travelled);
+    }
+  }
+
+  return nodes;
+}
+
+/** The correction at a distance along a way: interpolated, flat past the ends. */
+function deltaAt(deltas: Array<{ at: number; delta: number }>, at: number): number {
+  if (at <= deltas[0].at) return deltas[0].delta;
+  const last = deltas[deltas.length - 1];
+  if (at >= last.at) return last.delta;
+  for (let i = 1; i < deltas.length; i++) {
+    if (at <= deltas[i].at) {
+      const a = deltas[i - 1];
+      const b = deltas[i];
+      const span = b.at - a.at;
+      const t = span <= 1e-6 ? 1 : (at - a.at) / span;
+      return a.delta + (b.delta - a.delta) * t;
+    }
+  }
+  return last.delta;
 }

@@ -13,6 +13,10 @@
 
 import type { Terrain } from '../terrain/heightfield';
 import { roadSurfaceProfile, type RoadProfiles } from '../world/roadprofile';
+import {
+  gradedHalfWidth, sectionHalfWidth, sectionHeightAt, streetSection,
+  NORM_DEFAULT, type StreetEdge, type StreetNorm,
+} from '../world/street';
 import type { Road, Vec2 } from '../world/types';
 
 /** Cell size. Comfortably larger than a street is wide, small enough to stay cheap. */
@@ -32,6 +36,8 @@ export interface RoadHit {
    * instead would drop the car into the river.
    */
   surfaceY: number;
+  /** Half-width of the whole street, embankment included. */
+  streetHalfWidth: number;
 }
 
 interface Segment {
@@ -50,6 +56,9 @@ export class RoadIndex {
   private readonly roads: Road[];
   private readonly terrain: Terrain;
   private readonly shared: RoadProfiles | null;
+  private readonly norm: StreetNorm;
+  /** Cross-sections per way, built on first use. */
+  private readonly sections = new Map<number, StreetEdge[]>();
   /** Surface heights per way, built on first use — most ways are never driven. */
   private readonly profiles = new Map<number, number[]>();
 
@@ -59,10 +68,16 @@ export class RoadIndex {
    * since been cut to fit those very roads, and the car would drive a third of
    * a metre below the asphalt it can see.
    */
-  constructor(roads: Road[], terrain: Terrain, shared: RoadProfiles | null = null) {
+  constructor(
+    roads: Road[],
+    terrain: Terrain,
+    shared: RoadProfiles | null = null,
+    norm: StreetNorm = NORM_DEFAULT,
+  ) {
     this.roads = roads;
     this.terrain = terrain;
     this.shared = shared;
+    this.norm = norm;
 
     roads.forEach((road, roadIndex) => {
       for (let i = 0; i < road.points.length - 1; i++) {
@@ -142,13 +157,43 @@ export class RoadIndex {
     const vz = seg.bz - seg.az;
     const len = Math.hypot(vx, vz) || 1;
     const profile = this.profileFor(seg.road);
+    const crown = profile[seg.at] + (profile[seg.at + 1] - profile[seg.at]) * bestT;
+    const section = this.sectionFor(seg.road);
+    const built = gradedHalfWidth(section);
+    const full = sectionHalfWidth(section);
+
+    // The height of whatever part of the street this point is over — channel,
+    // kerb, verge, pavement — and then, across the embankment, a ramp down to
+    // the ground the embankment lands on. Without that last piece the car
+    // stands on the drawn earthwork until it crosses the pavement's back edge
+    // and then drops the height of the embankment in one step.
+    let surfaceY: number;
+    if (bestDist <= built) {
+      surfaceY = crown + sectionHeightAt(section, bestDist);
+    } else {
+      const inner = crown + sectionHeightAt(section, built);
+      const outer = this.terrain.heightAt(x, z);
+      const t = full > built ? Math.min(1, (bestDist - built) / (full - built)) : 1;
+      surfaceY = inner + (outer - inner) * t;
+    }
+
     return {
       road: this.roads[seg.road],
       distance: bestDist,
       point: [seg.ax + vx * bestT, seg.az + vz * bestT],
       direction: [vx / len, vz / len],
-      surfaceY: profile[seg.at] + (profile[seg.at + 1] - profile[seg.at]) * bestT,
+      surfaceY,
+      streetHalfWidth: full,
     };
+  }
+
+  private sectionFor(roadIndex: number): StreetEdge[] {
+    let section = this.sections.get(roadIndex);
+    if (!section) {
+      section = streetSection(this.roads[roadIndex], this.norm);
+      this.sections.set(roadIndex, section);
+    }
+    return section;
   }
 
   private profileFor(roadIndex: number): number[] {

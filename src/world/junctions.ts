@@ -51,7 +51,25 @@ function reachAlong(halfWidth: number, sinAngle: number): number {
   return halfWidth / Math.max(0.34, Math.abs(sinAngle));
 }
 
-export function junctionSpans(roads: Road[]): Map<string, StreetSpans> {
+/**
+ * One place where two ways cross, with how far along each way it is.
+ *
+ * Wanted by two quite different jobs: deciding where the paving stops, and
+ * deciding what height the ground is at a junction. They have to agree, so
+ * they read the same crossings.
+ */
+export interface Crossing {
+  x: number;
+  z: number;
+  roadA: number;
+  roadB: number;
+  atA: number;
+  atB: number;
+  /** |sin| of the angle between the two ways. */
+  sin: number;
+}
+
+export function findCrossings(roads: Road[]): Crossing[] {
   const segments: Seg[] = [];
   const cells = new Map<number, number[]>();
 
@@ -83,9 +101,7 @@ export function junctionSpans(roads: Road[]): Map<string, StreetSpans> {
     }
   });
 
-  const out = new Map<string, StreetSpans>();
-  const raw = roads.map(() => ({ sides: [] as Array<[number, number]>, carriageway: [] as Array<[number, number]> }));
-
+  const out: Crossing[] = [];
   const seen = new Set<number>();
   for (let i = 0; i < segments.length; i++) {
     const a = segments[i];
@@ -107,39 +123,52 @@ export function junctionSpans(roads: Road[]): Map<string, StreetSpans> {
 
           const hit = crossing(a, b);
           if (!hit) continue;
-
-          const roadA = roads[a.road];
-          const roadB = roads[b.road];
-          const sin = Math.abs(hit.sin);
-
-          // The wider road carries its surface through; the narrower one
-          // stops at the kerb line. A tie is broken on identity so the same
-          // pair always resolves the same way whatever order they arrive in.
-          const aMajor = roadA.width !== roadB.width
-            ? roadA.width > roadB.width
-            : roadA.id < roadB.id;
-
-          const alongA = a.at + a.len * hit.ta;
-          const alongB = b.at + b.len * hit.tb;
-
-          // Each road's paving stops where the other road's carriageway runs.
-          const sideA = reachAlong(roadB.width / 2, sin);
-          const sideB = reachAlong(roadA.width / 2, sin);
-          raw[a.road].sides.push([alongA - sideA, alongA + sideA]);
-          raw[b.road].sides.push([alongB - sideB, alongB + sideB]);
-
-          // Only the minor road's asphalt is interrupted, and only across the
-          // major road's carriageway, which is exactly what covers the gap.
-          if (aMajor) {
-            raw[b.road].carriageway.push([alongB - sideB, alongB + sideB]);
-          } else {
-            raw[a.road].carriageway.push([alongA - sideA, alongA + sideA]);
-          }
+          out.push({
+            x: a.ax + (a.bx - a.ax) * hit.ta,
+            z: a.az + (a.bz - a.az) * hit.ta,
+            roadA: a.road,
+            roadB: b.road,
+            atA: a.at + a.len * hit.ta,
+            atB: b.at + b.len * hit.tb,
+            sin: Math.abs(hit.sin),
+          });
         }
       }
     }
   }
+  return out;
+}
 
+export function junctionSpans(roads: Road[], crossings = findCrossings(roads)): Map<string, StreetSpans> {
+  const raw = roads.map(() => ({
+    sides: [] as Array<[number, number]>,
+    carriageway: [] as Array<[number, number]>,
+  }));
+
+  for (const c of crossings) {
+    const roadA = roads[c.roadA];
+    const roadB = roads[c.roadB];
+
+    // The wider road carries its surface through; the narrower one stops at
+    // the kerb line. A tie is broken on identity so the same pair always
+    // resolves the same way whatever order they arrive in.
+    const aMajor = roadA.width !== roadB.width
+      ? roadA.width > roadB.width
+      : roadA.id < roadB.id;
+
+    // Each road's paving stops where the other road's carriageway runs.
+    const sideA = reachAlong(roadB.width / 2, c.sin);
+    const sideB = reachAlong(roadA.width / 2, c.sin);
+    raw[c.roadA].sides.push([c.atA - sideA, c.atA + sideA]);
+    raw[c.roadB].sides.push([c.atB - sideB, c.atB + sideB]);
+
+    // Only the minor road's asphalt is interrupted, and only across the major
+    // road's carriageway, which is exactly what covers the gap.
+    if (aMajor) raw[c.roadB].carriageway.push([c.atB - sideB, c.atB + sideB]);
+    else raw[c.roadA].carriageway.push([c.atA - sideA, c.atA + sideA]);
+  }
+
+  const out = new Map<string, StreetSpans>();
   roads.forEach((road, index) => {
     const spans = raw[index];
     if (!spans.sides.length && !spans.carriageway.length) return;

@@ -334,13 +334,22 @@ export class DrivenVehicle {
   }
 
   /**
-   * Height the car rests at over a point: the road deck where there is one,
-   * otherwise the bare ground. Sampling the terrain alone would drop the car
-   * through every bridge in the city.
+   * Height the car rests at over a point: the street surface where there is
+   * one, otherwise the bare ground.
+   *
+   * "Street" means the whole built width — carriageway, kerb, verge, pavement
+   * — and not just the asphalt. The earth beneath a street is cut a third of a
+   * metre below its crown to carry it, and the only thing covering that cut is
+   * the drawn street itself. Asking for the terrain one centimetre past the
+   * kerb therefore dropped the car into a trench it could see the far side of:
+   * half a wheel buried in ground that the picture showed as a pavement.
+   *
+   * The grip test is separate and still uses the carriageway, because driving
+   * onto the verge should feel like driving onto a verge.
    */
   private restingHeight(x: number, z: number): number {
     const hit = this.roads?.nearest(x, z, 40);
-    if (hit && hit.distance <= hit.road.width / 2 + ROAD_EDGE_TOLERANCE) return hit.surfaceY;
+    if (hit && hit.distance <= hit.streetHalfWidth + ROAD_EDGE_TOLERANCE) return hit.surfaceY;
     return this.terrain.heightAt(x, z);
   }
 

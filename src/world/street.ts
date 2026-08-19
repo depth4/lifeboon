@@ -225,6 +225,32 @@ export function streetSection(road: Road, norm: StreetNorm): StreetEdge[] {
   return edges;
 }
 
+/**
+ * Height of the finished street above the crown, at a distance from the
+ * centreline.
+ *
+ * This is what anything standing on the street has to ask — not just the
+ * renderer. The car used to be given the crown height for any point within the
+ * carriageway and the bare terrain for everything past it, which meant that
+ * one centimetre beyond the kerb it fell through the pavement and into the
+ * trench the corridor was cut into. Same section, one source, both answers.
+ */
+export function sectionHeightAt(section: StreetEdge[], dist: number): number {
+  const d = Math.abs(dist);
+  let prev = section[0];
+  for (let i = 1; i < section.length; i++) {
+    const edge = section[i];
+    if (Number.isNaN(edge.dy)) break;
+    if (d <= edge.offset) {
+      const span = edge.offset - prev.offset;
+      const t = span <= 1e-6 ? 1 : (d - prev.offset) / span;
+      return prev.dy + (edge.dy - prev.dy) * t;
+    }
+    prev = edge;
+  }
+  return prev.dy;
+}
+
 /** Total half-width of a street including everything beside the carriageway. */
 export function sectionHalfWidth(section: StreetEdge[]): number {
   return section[section.length - 1].offset;
