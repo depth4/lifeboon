@@ -62,8 +62,10 @@ and the city came out as floating slabs.
 | Triangle winding | Counter-clockwise seen from outside. Backface culling is on; wrong winding makes geometry silently invisible. This has happened twice. |
 | OSM `layer` | A **stacking order**, not an altitude. Only `bridge=yes` lifts anything. See `world/roadprofile.ts`. |
 | Underground | `tunnel=yes` or `layer < 0` → not drawn, not in the road index. |
-| Height stack | land cover ≤ 0.21 m · carriageway 0.28 · markings 0.31 · pavement 0.38. Keep gaps: surfaces within a few cm fight in the depth buffer. |
-| Road surface | `world/roadprofile.ts` is the single source. The renderer and the car must agree, or the car sinks through bridges. |
+| Streets | A street is a **cross-section** (`world/street.ts`), not a stack of flat sheets. Kerb, verge and pavement have real heights and real vertical faces. Never add a "lift" constant to keep two surfaces apart — give them different places in the section instead. |
+| Grading | The earth is **cut to carry the streets** (`Heightfield.gradeStreets`) before anything is built on it. That, not a height offset, is what keeps land cover from being drawn across a road. |
+| Road surface | `world/roadprofile.ts` is the single source. Profiles are computed **once, on un-graded ground**, and shared by the renderer, the grading and the car. Recompute one afterwards and you get a road built on a road. |
+| Terrain grid | Elevation arrives at 20-30 m. `refinedTo(4 m)` before grading, and the ground mesh's core spacing is derived from `terrain.resolution` — the core spans **2 × radius**, so `cells = 2·radius / (CORE_FRACTION · resolution)`. Getting that factor wrong leaves the mesh ramping over features the field resolves sharply. |
 | Grip | One number, `availableGrip()`. Driving, braking and cornering all spend from it (friction circle). Never add a second grip constant. |
 
 ## Environment
@@ -78,7 +80,9 @@ and the city came out as floating slabs.
   It renders at well under 1 fps. **Do not measure simulation behaviour by
   wall-clock time in that browser** — step the simulation by hand from
   `page.evaluate` instead. This cost a whole debugging detour once.
-- `window.lifeboon` exposes the running app for probing from the console.
+- `window.lifeboon` exposes the running app for probing from the console. The
+  useful probes are `world.terrain.heightAt/slopeAt`, `roadIndex.nearest`, and
+  raycasting straight down onto a named mesh to ask what was actually drawn.
 - The build stamp (git SHA + time) is shown in the app under
   "Controls & data quality". Use it to tell a stale cache from a failed fix.
 
@@ -100,7 +104,7 @@ changed that should not have.
 | Path | What |
 |---|---|
 | `src/data/` | Overpass fetch + cache, OSM parsing, offline city generator |
-| `src/world/` | World model types, road surface profiles |
+| `src/world/` | World model types, road profiles, street cross-sections, junctions |
 | `src/terrain/` | Heightfield, elevation tiles, waterway carving |
 | `src/sim/` | Nav graph, population, vehicle physics, driver, road index |
 | `src/render/` | Scene, camera, ground, roads, buildings, people, car |

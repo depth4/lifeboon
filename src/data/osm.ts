@@ -22,6 +22,7 @@ import type {
 } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
 import { FlatTerrain } from '../terrain/heightfield';
+import { normFor } from '../world/street';
 import type { OverpassElement, OverpassResponse } from './overpass';
 import {
   areaKind,
@@ -426,6 +427,7 @@ export function parseOsm(
     audit,
     terrain,
     radius,
+    norm: normFor((bbox.south + bbox.north) / 2, (bbox.west + bbox.east) / 2),
     seed: hashString(`${bbox.south.toFixed(4)},${bbox.west.toFixed(4)}`),
     stats: {
       buildings: acc.buildings.length,

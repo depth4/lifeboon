@@ -8,6 +8,7 @@
  */
 
 import type { Terrain } from '../terrain/heightfield';
+import type { StreetNorm } from './street';
 
 export type Vec2 = [number, number];
 
@@ -226,6 +227,12 @@ export interface World {
   terrain: Terrain;
   /** Half-extent of the loaded area in metres, used to size ground and fog. */
   radius: number;
+  /**
+   * Which national street norm applies here: how wide the verge is, how high
+   * the kerb stands, whether there is a pavement at all. Decided from where
+   * the city is, because these are regulations and regulations have borders.
+   */
+  norm: StreetNorm;
   stats: WorldStats;
   seed: number;
 }

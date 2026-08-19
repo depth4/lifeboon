@@ -279,9 +279,10 @@ export function carveWaterways(
     }
     if (!isFinite(level)) continue;
 
-    // Sink the bed slightly below the surface so the water reads as water
-    // rather than as a decal fighting the ground for the same pixels.
-    terrain.carveTo(area.ring, level - 1.2);
+    // The bed goes below the surface so the water reads as water rather than
+    // as a decal fighting the ground for the same pixels. How far below, and
+    // how the bank shelves up to meet it, is carveTo's business.
+    terrain.carveTo(area.ring, level);
     levels.set(area.id, level);
   }
 

@@ -1,9 +1,21 @@
 /**
  * Road geometry.
  *
- * Each centreline is widened into a ribbon with mitred joints, which keeps
- * corners closed without the fan of triangles a naive per-segment quad needs.
- * Carriageways, pavements and lane markings are three merged meshes.
+ * A street is built from its cross-section (see world/street.ts), not from a
+ * stack of flat ribbons. The section is a list of edges walking out from the
+ * crown — channel, kerb face, kerb top, verge, pavement, embankment — and each
+ * one is swept along the centreline into a rail. Neighbouring rails share
+ * their vertices exactly, so the whole street is one closed surface: there is
+ * no seam to crack open and no pair of surfaces competing for the same pixels.
+ *
+ * That is the difference from what stood here before. Previously the
+ * carriageway, the pavement and the markings were three separate flat sheets
+ * floating at 0.28, 0.38 and 0.31 metres, and those numbers existed purely to
+ * keep them out of each other's depth range. The kerb was a dark stripe
+ * painted at pavement level. Now the kerb is a real 15 cm step with a vertical
+ * face that catches the sun, the verge is genuinely lower than the paving
+ * beside it, and the earth underneath has been cut to carry all of it
+ * (terrain/heightfield.ts, `gradeStreets`).
  */
 
 import * as THREE from 'three';
@@ -15,23 +27,23 @@ import {
   gradedProfile,
   isUnderground,
   roadSurfaceProfile,
+  type RoadProfiles,
 } from '../world/roadprofile';
-import { asphaltTexture } from './textures';
+import { streetSection, type StreetNorm, type StreetSurface } from '../world/street';
+import { inSpans, junctionSpans, spanCuts, spansFor, splitAt } from '../world/junctions';
+import { asphaltTexture, groundTexture } from './textures';
 
 /**
- * Layer heights above the ground surface.
+ * Where the drawn surfaces sit.
  *
- * The carriageway height itself lives in world/roadprofile.ts, because the
- * simulation needs it too — a car has to sit on the deck that was drawn. The
- * kerb sits above the carriageway; against land cover it stands 17 cm proud,
- * which is about right, and against bare ground more, which is the price of
- * keeping every surface out of the others' depth noise.
+ * The carriageway height lives in world/roadprofile.ts, because the simulation
+ * needs it too — a car has to sit on the deck that was drawn. Everything
+ * across the width of the street now comes from the cross-section instead of
+ * from constants here; the only survivor is the paint, which is 3 cm of
+ * thermoplastic on top of the asphalt and really is just a number.
  */
 const SURFACE_Y = ROAD_SURFACE_Y;
-const MARKING_Y = 0.31;
-const PAVEMENT_Y = 0.38;
-/** Width of the kerb strip that separates carriageway from pavement. */
-const KERB_WIDTH = 0.3;
+const MARKING_Y = SURFACE_Y + 0.03;
 
 const SURFACE_COLOR: Record<RoadClass, number> = {
   motorway: 0x4a4a4e,
@@ -49,12 +61,12 @@ const SURFACE_COLOR: Record<RoadClass, number> = {
 };
 
 /**
- * Pavement has to read as pavement against bare ground (0x9a9689 in
+ * Pavement has to read as pavement against bare ground (0x8a9166 in
  * render/ground.ts). The two used to differ by three points of blue, which is
- * invisible — keep a real gap here, and let the darker kerb draw the edge.
+ * invisible — keep a real gap here, and let the kerb's shaded face and its
+ * cast shadow draw the edge.
  */
 const PAVEMENT_COLOR = 0xc0bcb4;
-const KERB_COLOR = 0x8f8a83;
 
 export interface RoadMeshes {
   group: THREE.Group;
@@ -151,69 +163,185 @@ function raise(profile: number[], by: number): number[] {
   return profile.map((h) => h + by);
 }
 
-export function buildRoadMeshes(roads: Road[], terrain: Terrain): RoadMeshes {
-  const surfPos: number[] = [];
-  const surfUv: number[] = [];
-  const surfCol: number[] = [];
+/**
+ * One edge of the cross-section swept along the street: a polyline with a
+ * height for every point. Two neighbouring rails bound one strip of surface.
+ */
+interface Rail {
+  pts: Vec2[];
+  y: number[];
+}
 
-  const pavePos: number[] = [];
-  const paveUv: number[] = [];
-  const paveCol: number[] = [];
+/**
+ * Emit the strip between two rails.
+ *
+ * `a` must be the rail on the left-hand side of travel and `b` the one on the
+ * right, because the winding below assumes it. Hand them over the wrong way
+ * round and every triangle comes out face-down, which backface culling then
+ * hides completely — that has happened twice in this file's history, once for
+ * road ribbons and once for pavements.
+ */
+function emitStrip(
+  a: Rail,
+  b: Rail,
+  color: THREE.Color,
+  pos: number[],
+  uv: number[],
+  col: number[],
+  uvScale: number,
+  skip: boolean[] | null = null,
+): void {
+  let travelled = 0;
+  const n = Math.min(a.pts.length, b.pts.length);
+  for (let i = 0; i < n - 1; i++) {
+    const a0 = a.pts[i], a1 = a.pts[i + 1];
+    const b0 = b.pts[i], b1 = b.pts[i + 1];
+    const ay0 = a.y[i], ay1 = a.y[i + 1];
+    const by0 = b.y[i], by1 = b.y[i + 1];
+
+    const segLen = Math.hypot(a1[0] - a0[0], a1[1] - a0[1]);
+    const v0 = travelled / uvScale;
+    const v1 = (travelled + segLen) / uvScale;
+    travelled += segLen;
+    // The texture still advances across a skipped stretch, so paving picks up
+    // on the far side of a junction where it left off rather than restarting.
+    if (skip?.[i]) continue;
+
+    pos.push(
+      a0[0], ay0, a0[1], b1[0], by1, b1[1], b0[0], by0, b0[1],
+      a0[0], ay0, a0[1], a1[0], ay1, a1[1], b1[0], by1, b1[1],
+    );
+    uv.push(0, v0, 1, v1, 1, v0, 0, v0, 0, v1, 1, v1);
+    for (let k = 0; k < 6; k++) col.push(color.r, color.g, color.b);
+  }
+}
+
+/** Which merged mesh a surface belongs to. Three materials cover the street. */
+type Bucket = 'asphalt' | 'paving' | 'soil';
+
+const BUCKET_OF: Record<StreetSurface, Bucket> = {
+  carriageway: 'asphalt',
+  kerb: 'paving',
+  pavement: 'paving',
+  verge: 'soil',
+  batter: 'soil',
+};
+
+/**
+ * Colour of each strip.
+ *
+ * The kerb is two colours rather than one: its vertical face is in shade
+ * whenever its top is in sun, and giving them the same value throws away the
+ * only cue that says there is a step there at all.
+ */
+const KERB_FACE_COLOR = 0x847f78;
+const KERB_TOP_COLOR = 0xa9a49b;
+const VERGE_COLOR = 0x86a862;
+/** Matches FLAT_GROUND in render/ground.ts, so the embankment ties in unseen. */
+const BATTER_COLOR = 0x8a9166;
+
+export function buildRoadMeshes(
+  roads: Road[],
+  terrain: Terrain,
+  profiles: RoadProfiles,
+  norm: StreetNorm,
+): RoadMeshes {
+  const buckets: Record<Bucket, { pos: number[]; uv: number[]; col: number[] }> = {
+    asphalt: { pos: [], uv: [], col: [] },
+    paving: { pos: [], uv: [], col: [] },
+    soil: { pos: [], uv: [], col: [] },
+  };
 
   const markPos: number[] = [];
   const markUv: number[] = [];
   const markCol: number[] = [];
 
   const color = new THREE.Color();
-  const paveColor = new THREE.Color(PAVEMENT_COLOR);
-  const kerbColor = new THREE.Color(KERB_COLOR);
   const markColor = new THREE.Color(0xd8d2c4);
+
+  // Where streets cross, the paving has to stop; without this the verge runs
+  // straight over the main road and the city grows grass across its junctions.
+  const junctions = junctionSpans(roads);
 
   for (const road of roads) {
     if (road.points.length < 2) continue;
     // Underpasses and metro lines are below the streets, not on them.
     if (isUnderground(road)) continue;
-    const half = road.width / 2;
-    const profile = roadSurfaceProfile(road, terrain);
 
-    const { left, right } = offsetPolyline(road.points, half);
-    color.set(SURFACE_COLOR[road.cls]);
-    emitRibbon(left, right, profile, color, surfPos, surfUv, surfCol, 8);
+    const rawProfile = profiles.get(road) ?? roadSurfaceProfile(road, terrain);
+    const section = streetSection(road, norm);
+    const spans = spansFor(junctions, road);
 
-    // Pavements flank anything cars use; footpaths are already pavement.
-    //
-    // Argument order is load-bearing. emitRibbon winds its triangles assuming
-    // the first list is the one offsetPolyline calls `left`; hand it an
-    // inner-to-outer pair on the left-hand side and every triangle comes out
-    // face-down, which backface culling then hides completely. That is exactly
-    // what happened here — pavements were built for every street in the world
-    // and none of them were ever drawn.
-    if (road.drivable && road.cls !== 'service') {
-      const paveWidth = road.cls === 'primary' || road.cls === 'secondary' ? 3 : 2.2;
-      const kerb = offsetPolyline(road.points, half + KERB_WIDTH);
-      const outer = offsetPolyline(road.points, half + paveWidth);
+    // Split the way exactly where each junction begins, so an interruption is
+    // the size of the junction rather than the size of whichever straight
+    // happened to pass through it.
+    const line = splitAt(road.points, rawProfile, spanCuts(spans));
+    const profile = line.heights;
+    const segments = line.points.length - 1;
 
-      // Kerb first: a dark line along the edge of the carriageway is what
-      // makes the pavement beside it legible as a separate surface.
-      const paveProfile = raise(profile, PAVEMENT_Y - SURFACE_Y);
-      emitRibbon(kerb.left, left, paveProfile, kerbColor, pavePos, paveUv, paveCol, 2);
-      emitRibbon(right, kerb.right, paveProfile, kerbColor, pavePos, paveUv, paveCol, 2);
+    const mid = new Array<number>(segments);
+    for (let i = 0; i < segments; i++) {
+      mid[i] = (line.distances[i] + line.distances[i + 1]) / 2;
+    }
+    const skipSides = spans.sides.length
+      ? mid.map((d) => inSpans(spans.sides, d))
+      : null;
+    const skipCarriageway = spans.carriageway.length
+      ? mid.map((d) => inSpans(spans.carriageway, d))
+      : null;
 
-      emitRibbon(outer.left, kerb.left, paveProfile, paveColor, pavePos, paveUv, paveCol, 6);
-      emitRibbon(kerb.right, outer.right, paveProfile, paveColor, pavePos, paveUv, paveCol, 6);
+    // Every edge of the section, swept. Offset 0 is the crown, shared by both
+    // sides, so it is built once and both halves grow outwards from it.
+    const crown: Rail = { pts: line.points, y: profile.map((h) => h + section[0].dy) };
+
+    let prevLeft = crown;
+    let prevRight = crown;
+
+    for (let k = 1; k < section.length; k++) {
+      const edge = section[k];
+      const { left, right } = offsetPolyline(line.points, edge.offset);
+
+      // A NaN height means "wherever the ground is" — the outer lip of the
+      // embankment, which has to land exactly on the terrain or the street
+      // finishes in a step. Everything else is a fixed rise off the crown.
+      const heightsFor = (pts: Vec2[]): number[] =>
+        Number.isNaN(edge.dy)
+          ? pts.map(([x, z]) => terrain.heightAt(x, z))
+          : profile.map((h) => h + edge.dy);
+
+      const railLeft: Rail = { pts: left, y: heightsFor(left) };
+      const railRight: Rail = { pts: right, y: heightsFor(right) };
+
+      // A strip whose two edges sit at the same offset is a vertical face —
+      // the kerb — and it is shaded darker than the flat top above it.
+      const vertical = edge.offset === section[k - 1].offset;
+      color.set(pickColor(edge.surface, road.cls, vertical));
+      const bucket = buckets[BUCKET_OF[edge.surface]];
+      const uvScale = edge.surface === 'carriageway' ? 8 : 4;
+      const skip = edge.surface === 'carriageway' ? skipCarriageway : skipSides;
+
+      emitStrip(prevRight, railRight, color, bucket.pos, bucket.uv, bucket.col, uvScale, skip);
+      emitStrip(railLeft, prevLeft, color, bucket.pos, bucket.uv, bucket.col, uvScale, skip);
+
+      prevLeft = railLeft;
+      prevRight = railRight;
     }
 
-    // A dashed centre line on roads big enough to have one.
+    // A dashed centre line on roads big enough to have one. Paint stops at a
+    // junction: running a lane line through a crossroads is not what is on the
+    // ground anywhere.
     if (road.drivable && road.lanes >= 2 && road.width >= 7 && !road.oneway) {
-      const centre = offsetPolyline(road.points, 0.16);
+      const centre = offsetPolyline(line.points, 0.16);
       emitDashedLine(
         centre.left, centre.right, raise(profile, MARKING_Y - SURFACE_Y),
-        markColor, markPos, markUv, markCol,
+        markColor, markPos, markUv, markCol, spans.sides,
       );
     }
   }
 
   const asphalt = asphaltTexture();
+  const soil = groundTexture();
+  soil.repeat.set(1, 1);
 
   const group = new THREE.Group();
   group.name = 'roads';
@@ -223,27 +351,26 @@ export function buildRoadMeshes(roads: Road[], terrain: Terrain): RoadMeshes {
     vertexColors: true,
     roughness: 0.96,
     metalness: 0,
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
   });
   const paveMat = new THREE.MeshStandardMaterial({
     map: asphalt,
     vertexColors: true,
-    roughness: 0.95,
+    roughness: 0.9,
     metalness: 0,
-    polygonOffset: true,
-    polygonOffsetFactor: -3,
-    polygonOffsetUnits: -3,
+  });
+  const soilMat = new THREE.MeshStandardMaterial({
+    map: soil,
+    vertexColors: true,
+    roughness: 1,
+    metalness: 0,
   });
   const markMat = new THREE.MeshBasicMaterial({
     vertexColors: true,
     polygonOffset: true,
-    polygonOffsetFactor: -4,
-    polygonOffsetUnits: -4,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
   });
 
-  const meshes: THREE.Mesh[] = [];
   const geoms: THREE.BufferGeometry[] = [];
 
   const add = (
@@ -259,14 +386,17 @@ export function buildRoadMeshes(roads: Road[], terrain: Terrain): RoadMeshes {
     geom.computeBoundingSphere();
     const mesh = new THREE.Mesh(geom, mat);
     mesh.receiveShadow = receiveShadow;
+    // The kerb is the one piece of street furniture tall enough to cast a
+    // shadow worth having: it is what draws the edge of the road at low sun.
+    mesh.castShadow = name === 'roads:paving';
     mesh.name = name;
     group.add(mesh);
-    meshes.push(mesh);
     geoms.push(geom);
   };
 
-  add(surfPos, surfUv, surfCol, surfaceMat, 'roads:surface', true);
-  add(pavePos, paveUv, paveCol, paveMat, 'roads:pavement', true);
+  add(buckets.asphalt.pos, buckets.asphalt.uv, buckets.asphalt.col, surfaceMat, 'roads:surface', true);
+  add(buckets.paving.pos, buckets.paving.uv, buckets.paving.col, paveMat, 'roads:paving', true);
+  add(buckets.soil.pos, buckets.soil.uv, buckets.soil.col, soilMat, 'roads:verge', true);
   add(markPos, markUv, markCol, markMat, 'roads:markings', false);
 
   return {
@@ -275,10 +405,22 @@ export function buildRoadMeshes(roads: Road[], terrain: Terrain): RoadMeshes {
       for (const g of geoms) g.dispose();
       surfaceMat.dispose();
       paveMat.dispose();
+      soilMat.dispose();
       markMat.dispose();
       asphalt.dispose();
+      soil.dispose();
     },
   };
+}
+
+function pickColor(surface: StreetSurface, cls: RoadClass, vertical: boolean): number {
+  switch (surface) {
+    case 'carriageway': return SURFACE_COLOR[cls];
+    case 'kerb': return vertical ? KERB_FACE_COLOR : KERB_TOP_COLOR;
+    case 'pavement': return PAVEMENT_COLOR;
+    case 'verge': return VERGE_COLOR;
+    case 'batter': return BATTER_COLOR;
+  }
 }
 
 /**
@@ -385,6 +527,7 @@ function emitDashedLine(
   pos: number[],
   uv: number[],
   col: number[],
+  gaps: Array<[number, number]> = [],
 ): void {
   const DASH = 3;
   const GAP = 6;
@@ -397,7 +540,7 @@ function emitDashedLine(
     let t = 0;
     while (t < segLen) {
       const cycle = (distance + t) % (DASH + GAP);
-      if (cycle < DASH) {
+      if (cycle < DASH && !inSpans(gaps, distance + t)) {
         const runEnd = Math.min(segLen, t + (DASH - cycle));
         const a = t / segLen;
         const b = runEnd / segLen;

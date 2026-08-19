@@ -15,13 +15,13 @@ import { fetchArea, geocode, OverpassError } from './data/overpass';
 import { parseOsm } from './data/osm';
 import { generateCity } from './data/procedural';
 import { carveWaterways, fetchHeightfield } from './terrain/elevation';
-import { FlatTerrain } from './terrain/heightfield';
+import { FlatTerrain, Heightfield } from './terrain/heightfield';
 import { NavGraph } from './sim/navgraph';
 import { Population, type Agent } from './sim/population';
 import { RoadIndex } from './sim/roadindex';
 import { DrivenVehicle, type DriveControls } from './sim/driver';
 import { CITY_MICROCAR } from './sim/vehicles';
-import { isUnderground } from './world/roadprofile';
+import { GRADING_GRID_M, RoadProfiles, isUnderground } from './world/roadprofile';
 import { SceneRig } from './render/scene';
 import { CameraController } from './render/camera';
 import { buildBuildingMeshes, BuildingIndex, type BuildingMeshes } from './render/buildings';
@@ -199,6 +199,13 @@ class App {
     this.teardownWorld();
 
     this.world = world;
+    // Resample the ground before anything reads a height off it. Elevation
+    // tiles are far too coarse to have a street cut into them, and every
+    // consumer below — the camera, the people, the geometry — has to see the
+    // same surface the streets were graded into.
+    if (world.terrain instanceof Heightfield) {
+      world.terrain = world.terrain.refinedTo(GRADING_GRID_M);
+    }
     this.hud.setWorld(world);
     this.cameras.setTerrain(world.terrain);
     this.people.setTerrain(world.terrain);
@@ -211,6 +218,14 @@ class App {
     // roads and bridges all need to see the carved channel, not the flat
     // satellite surface that hides it.
     const water = carveWaterways(world.terrain, world.areas, world.waterways);
+
+    // Then cut the streets into what is left. The profiles are taken first,
+    // off the ground as it stands, and everything downstream reads those same
+    // numbers — the geometry, the embankments and the car. Recomputing a
+    // profile after grading would describe a road built on top of a road.
+    const profiles = new RoadProfiles(world.roads, world.terrain);
+    world.terrain.gradeStreets(profiles.corridors(world.roads, world.norm));
+
     this.groundMeshes = buildGround(
       world.areas, world.radius, world.seed, world.terrain,
       water.areaLevels, world.waterways, water.flowLevels,
@@ -219,7 +234,7 @@ class App {
 
     this.hud.setLoading('Paving the streets…', 0.7);
     await nextFrame();
-    this.roadMeshes = buildRoadMeshes(world.roads, world.terrain);
+    this.roadMeshes = buildRoadMeshes(world.roads, world.terrain, profiles, world.norm);
     this.worldGroup.add(this.roadMeshes.group);
 
     this.railMeshes = buildRailwayMeshes(world.railways, world.terrain);
@@ -245,7 +260,7 @@ class App {
     // them either — otherwise you get grip and a street name while visibly
     // driving across a field.
     this.roadIndex = new RoadIndex(
-      world.roads.filter((r) => r.drivable && !isUnderground(r)), world.terrain,
+      world.roads.filter((r) => r.drivable && !isUnderground(r)), world.terrain, profiles,
     );
     this.hud.setDriveAvailable(this.roadIndex.roadCount > 0);
 

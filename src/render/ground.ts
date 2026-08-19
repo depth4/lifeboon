@@ -70,8 +70,21 @@ const FLAT_GROUND = new THREE.Color(0x8a9166);
 const STEEP_GROUND = new THREE.Color(0x8a7a63);
 const CLIFF_GROUND = new THREE.Color(0x7d756c);
 
-/** Grid resolution of the base mesh, per side. */
-const BASE_GRID = 208;
+/**
+ * Grid resolution of the base mesh, per side.
+ *
+ * Derived from the elevation data rather than fixed, because the ground now
+ * carries detail finer than the satellite ever saw: carved river beds and the
+ * trench cut for every street. A mesh coarser than the field it samples cuts
+ * the corners off both, and measurement found the result — the base mesh
+ * standing 1.1 m above a road that the heightfield put 0.4 m below it, so
+ * grass came through the asphalt at two dozen places along the river.
+ *
+ * Bounded at both ends: fine enough to matter, never so fine that a wide
+ * city pays for detail nobody can see.
+ */
+const MIN_BASE_GRID = 160;
+const MAX_BASE_GRID = 512;
 /** How far past the loaded area the stretched grid reaches, as a multiple. */
 const HORIZON_FACTOR = 5;
 /**
@@ -87,10 +100,10 @@ const HORIZON_FACTOR = 5;
 const CORE_FRACTION = 0.72;
 /**
  * Subdivide a draped triangle until its edges are shorter than this. It must
- * be finer than the terrain grid (20 m), or a land-cover triangle spans a
- * whole terrain cell and cuts through the surface it is supposed to lie on.
+ * be finer than the base mesh, or a land-cover triangle spans a whole terrain
+ * cell and cuts through the surface it is supposed to lie on.
  */
-const DRAPE_MAX_EDGE_M = 12;
+const DRAPE_MAX_EDGE_M = 8;
 
 export interface GroundMeshes {
   group: THREE.Group;
@@ -185,7 +198,18 @@ export function buildGround(
   const mats: THREE.Material[] = [];
 
   /* --------------------------------------------------- the terrain surface */
-  const cells = BASE_GRID;
+  // One facet per elevation sample across the loaded area, so the mesh is
+  // exactly as detailed as the surface it is drawn from and no more.
+  //
+  // The core of the grid — a CORE_FRACTION share of the cells — spans the
+  // full 2 * radius of the loaded area, not half of it. Getting that factor
+  // wrong put the facets at 8 m when they were meant to be at 4, and left the
+  // mesh ramping across a carved riverbank that the heightfield resolved
+  // sharply: measured 4.8 m of daylight between the two at the water's edge.
+  const cells = Math.max(
+    MIN_BASE_GRID,
+    Math.min(MAX_BASE_GRID, Math.round((2 * radius) / (CORE_FRACTION * Math.max(2, terrain.resolution)))),
+  );
   const verts = cells + 1;
   const positions = new Float32Array(verts * verts * 3);
   const colors = new Float32Array(verts * verts * 3);

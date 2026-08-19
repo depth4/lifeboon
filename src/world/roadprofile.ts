@@ -10,8 +10,9 @@
  * Heights are metres above the loaded area's reference level.
  */
 
-import type { Terrain } from '../terrain/heightfield';
+import type { StreetCorridor, Terrain } from '../terrain/heightfield';
 import { smoothProfile } from '../terrain/heightfield';
+import { gradedHalfWidth, streetSection, type StreetNorm } from './street';
 import type { Road, Vec2 } from './types';
 
 /** Height above ground per OSM layer, so stacked structures clear each other. */
@@ -24,6 +25,29 @@ export const LAYER_HEIGHT = 5;
  * three levels of nesting), so the carriageway starts above that.
  */
 export const ROAD_SURFACE_Y = 0.28;
+
+/**
+ * How far the earth is cut below the crown of the carriageway.
+ *
+ * The road structure lives in this gap — sub-base, kerb foundation — and so
+ * does anything else the map happens to drape over the same ground. That is
+ * the point: a park polygon crossing a street now lies buried under the road
+ * instead of being drawn on top of it, and no lift constant is needed to
+ * arrange the two. Deep enough to clear the land-cover stack (0.21 m) with
+ * room to spare.
+ */
+export const GRADE_DEPTH = 0.34;
+
+/**
+ * Spacing the ground is resampled to before streets are cut into it.
+ *
+ * Elevation tiles arrive at 20-30 m per sample. A residential corridor is
+ * about ten metres wide, so cutting one into a 20 m grid would not carry a
+ * road — it would sag the whole block. Four metres is fine enough that a
+ * street trench is a street trench, and costs well under a megabyte for a
+ * kilometre-wide city.
+ */
+export const GRADING_GRID_M = 4;
 
 /**
  * Roads are graded: real ones are cut and filled so they do not follow every
@@ -78,13 +102,27 @@ export function bridgeProfile(
   const total = cumulative[n - 1] || 1;
 
   // How high the deck must ride to clear the ground and any water beneath it.
+  //
+  // The arch is a sine, so a point a quarter of the way along only gets 70% of
+  // it. Sizing the arch by the bare deficit therefore clears the obstacle only
+  // when the obstacle happens to sit at mid-span; anywhere else the deck goes
+  // through it. Measured on the offline city: a rise a third of the way along
+  // a 250 m bridge came out 1.2 m above the deck, so the road ran through the
+  // hillside. Dividing by the sine at that point is what actually guarantees
+  // the clearance, wherever the high ground is.
   const CLEARANCE = 3.5;
   let needed = 0;
   for (let i = 0; i < n; i++) {
     const t = cumulative[i] / total;
     const chord = startY + (endY - startY) * t;
     const below = terrain.heightAt(points[i][0], points[i][1]);
-    needed = Math.max(needed, below + CLEARANCE - chord);
+    const deficit = below + CLEARANCE - chord;
+    if (deficit <= 0) continue;
+    // Guarded: at the very ends the sine is zero and the deck is flush with
+    // the ground by design, so no arch can or should lift it there.
+    const lift = Math.sin(t * Math.PI);
+    if (lift < 0.08) continue;
+    needed = Math.max(needed, deficit / lift);
   }
   // A long viaduct needs a real arch; a short canal crossing needs almost none.
   const arch = Math.max(0, Math.min(needed, 12));
@@ -138,4 +176,67 @@ export function roadSurfaceProfile(road: Road, terrain: Terrain): number[] {
  */
 export function isUnderground(way: { tunnel: boolean; layer: number }): boolean {
   return way.tunnel || way.layer < 0;
+}
+
+/**
+ * Every way's finished surface height, computed once.
+ *
+ * This has to exist because grading and drawing must not disagree. The
+ * renderer used to ask for a profile, the road index asked again later, and
+ * both read it straight off the terrain — fine while nothing changed the
+ * terrain. The moment streets started cutting into the ground, a profile
+ * computed after grading would describe a road built on a road, sinking
+ * `GRADE_DEPTH` further with every reload. So profiles are taken from the
+ * untouched ground first, and everything downstream reads these.
+ */
+export class RoadProfiles {
+  private readonly byId = new Map<string, number[]>();
+
+  constructor(roads: Road[], terrain: Terrain) {
+    for (const road of roads) {
+      if (road.points.length < 2) continue;
+      this.byId.set(road.id, roadSurfaceProfile(road, terrain));
+    }
+  }
+
+  /** Surface height at every point of a way, or null if it was not indexed. */
+  get(road: Road): number[] | null {
+    return this.byId.get(road.id) ?? null;
+  }
+
+  /**
+   * The corridors the earth has to be cut to.
+   *
+   * A bridge is deliberately absent: its deck is metres above the ground and
+   * cutting a trench under one would dig a hole in the riverbank for no
+   * reason. Underground ways are absent for the same reason in reverse — we
+   * do not draw them, so we must not shape the surface around them either.
+   */
+  corridors(roads: Road[], norm: StreetNorm): StreetCorridor[] {
+    const out: StreetCorridor[] = [];
+    for (const road of roads) {
+      if (road.bridge || isUnderground(road)) continue;
+      const levels = this.byId.get(road.id);
+      if (!levels) continue;
+      const section = streetSection(road, norm);
+      out.push({
+        points: road.points,
+        halfWidth: gradedHalfWidth(section),
+        blend: Math.max(1.5, norm.batter),
+        levels,
+        depth: GRADE_DEPTH,
+        // The embankment edge is deliberately dropped: its height is whatever
+        // the untouched ground turns out to be, which is the question grading
+        // is answering, not an input to it.
+        shape: section
+          .filter((e) => !Number.isNaN(e.dy))
+          .map((e) => [e.offset, e.dy] as [number, number]),
+      });
+    }
+    // Where two corridors claim the same ground equally hard — a crossroads —
+    // the first claim is the one that stands, so the bigger road goes first
+    // and carries the side street across it rather than being dug through.
+    out.sort((a, b) => b.halfWidth - a.halfWidth);
+    return out;
+  }
 }

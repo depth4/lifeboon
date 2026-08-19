@@ -12,7 +12,7 @@
  */
 
 import type { Terrain } from '../terrain/heightfield';
-import { roadSurfaceProfile } from '../world/roadprofile';
+import { roadSurfaceProfile, type RoadProfiles } from '../world/roadprofile';
 import type { Road, Vec2 } from '../world/types';
 
 /** Cell size. Comfortably larger than a street is wide, small enough to stay cheap. */
@@ -49,12 +49,20 @@ export class RoadIndex {
   private readonly segments: Segment[] = [];
   private readonly roads: Road[];
   private readonly terrain: Terrain;
+  private readonly shared: RoadProfiles | null;
   /** Surface heights per way, built on first use — most ways are never driven. */
   private readonly profiles = new Map<number, number[]>();
 
-  constructor(roads: Road[], terrain: Terrain) {
+  /**
+   * `shared` carries the profiles the streets were actually graded and drawn
+   * to. Without it the index would recompute them from a terrain that has
+   * since been cut to fit those very roads, and the car would drive a third of
+   * a metre below the asphalt it can see.
+   */
+  constructor(roads: Road[], terrain: Terrain, shared: RoadProfiles | null = null) {
     this.roads = roads;
     this.terrain = terrain;
+    this.shared = shared;
 
     roads.forEach((road, roadIndex) => {
       for (let i = 0; i < road.points.length - 1; i++) {
@@ -146,7 +154,8 @@ export class RoadIndex {
   private profileFor(roadIndex: number): number[] {
     let profile = this.profiles.get(roadIndex);
     if (!profile) {
-      profile = roadSurfaceProfile(this.roads[roadIndex], this.terrain);
+      const road = this.roads[roadIndex];
+      profile = this.shared?.get(road) ?? roadSurfaceProfile(road, this.terrain);
       this.profiles.set(roadIndex, profile);
     }
     return profile;
