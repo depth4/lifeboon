@@ -30,10 +30,12 @@ export interface Terrain {
   /**
    * Cut and fill the ground so it carries the streets given.
    *
-   * See `Heightfield.gradeStreets`. Flat ground has nothing to grade and
-   * answers false.
+   * `shoulder` is how far past the built edge of a street the earth is
+   * forbidden to stand higher than the street — it must be at least one cell
+   * of whatever mesh will draw this field. See `Heightfield.gradeStreets`.
+   * Flat ground has nothing to grade and answers false.
    */
-  gradeStreets(corridors: StreetCorridor[]): boolean;
+  gradeStreets(corridors: StreetCorridor[], shoulder?: number): boolean;
 }
 
 /**
@@ -391,25 +393,52 @@ export class Heightfield implements Terrain {
    * is paid once and only where it buys something.
    */
   refinedTo(spacing: number): Heightfield {
-    if (spacing >= this.resolution * 0.99) return this;
+    return this.resampled(spacing, {
+      minX: this.originX,
+      minZ: this.originZ,
+      maxX: this.originX + (this.cols - 1) * this.resolution,
+      maxZ: this.originZ + (this.rows - 1) * this.resolution,
+    });
+  }
 
-    const width = (this.cols - 1) * this.resolution;
-    const depth = (this.rows - 1) * this.resolution;
-    const cols = Math.max(2, Math.round(width / spacing) + 1);
-    const rows = Math.max(2, Math.round(depth / spacing) + 1);
-    const stepX = width / (cols - 1);
-    const stepZ = depth / (rows - 1);
+  /**
+   * A copy at a new spacing, covering at least the given box.
+   *
+   * Growing matters as much as refining. Grading can only write into the array
+   * it has, and a way that runs past the edge of the downloaded elevation —
+   * which OpenStreetMap ways routinely do, and which the offline city does by
+   * eighteen metres — is then a street with untouched hillside standing in it.
+   * Measured on the generated city: 3.7 m of earth through a residential road
+   * near the boundary, and nothing wrong with the grading at all.
+   *
+   * Outside the old array the samples come from `heightAt`, which invents the
+   * surroundings continuously from the real data, so the join is seamless and
+   * no measured sample is contradicted.
+   */
+  resampled(spacing: number, box: { minX: number; minZ: number; maxX: number; maxZ: number }): Heightfield {
+    const originX = Math.min(this.originX, box.minX);
+    const originZ = Math.min(this.originZ, box.minZ);
+    const width = Math.max(this.originX + (this.cols - 1) * this.resolution, box.maxX) - originX;
+    const depth = Math.max(this.originZ + (this.rows - 1) * this.resolution, box.maxZ) - originZ;
     // Square cells, or slopeAt and the grading reach stop meaning one thing.
-    const step = Math.min(stepX, stepZ);
+    const step = Math.min(spacing, this.resolution);
+    if (step >= this.resolution * 0.99
+      && originX >= this.originX - 1e-6 && originZ >= this.originZ - 1e-6
+      && width <= (this.cols - 1) * this.resolution + 1e-6
+      && depth <= (this.rows - 1) * this.resolution + 1e-6) {
+      return this;
+    }
 
+    const cols = Math.max(2, Math.round(width / step) + 1);
+    const rows = Math.max(2, Math.round(depth / step) + 1);
     const data = new Float32Array(cols * rows);
     for (let r = 0; r < rows; r++) {
-      const z = this.originZ + r * step;
+      const z = originZ + r * step;
       for (let c = 0; c < cols; c++) {
-        data[r * cols + c] = this.heightAt(this.originX + c * step, z);
+        data[r * cols + c] = this.heightAt(originX + c * step, z);
       }
     }
-    return new Heightfield(data, cols, rows, this.originX, this.originZ, step);
+    return new Heightfield(data, cols, rows, originX, originZ, step);
   }
 
   /**
@@ -432,17 +461,49 @@ export class Heightfield implements Terrain {
    * Applying them one road at a time would let a side street's embankment
    * re-cut a main road that had already been graded through the same junction.
    */
-  gradeStreets(corridors: StreetCorridor[]): boolean {
+  gradeStreets(corridors: StreetCorridor[], shoulder = this.shoulderReach()): boolean {
     if (!corridors.length) return false;
 
     const n = this.cols * this.rows;
     const weight = new Float32Array(n);
     const target = new Float32Array(n);
+    // Which corridor last claimed a node, and from how far away.
+    //
+    // Between two different streets the strongest claim wins and ties go to
+    // whichever came first, which is why the list is sorted widest-first: a
+    // side street must not dig through a main road at a crossing. But *within*
+    // one street the tie-break has to be distance, and getting that wrong was
+    // a real bug. Every segment of a way claims the ground around it, and a
+    // point past the end of a segment is measured from that end — so on a
+    // street running downhill, the segment above a node claimed it at its own
+    // higher level and the segment the node actually lies on could not correct
+    // it, because both claims were equally strong. Measured on a 12% grade:
+    // the earth left standing 47 cm above its own carriageway.
+    const owner = new Int32Array(n).fill(-1);
+    const claimed = new Float32Array(n);
+    // The shoulder lid: the highest the earth may stand this close to a
+    // street. Infinity means no street near enough to have an opinion.
+    const lid = new Float32Array(n).fill(Infinity);
 
-    for (const road of corridors) {
+    for (let ci = 0; ci < corridors.length; ci++) {
+      const road = corridors[ci];
       const { points, halfWidth, blend, levels, depth, shape } = road;
       if (points.length < 2 || levels.length !== points.length) continue;
-      const reach = halfWidth + blend;
+      const reach = halfWidth + Math.max(blend, shoulder);
+      // Height of the outermost built edge — the back of the pavement. This is
+      // what the earth beside the street may not rise above.
+      const edgeDy = shapeAt(shape, halfWidth);
+      // The lowest point of the finished section, which is the channel at the
+      // edge of the carriageway. Under the built width the earth is cut flat
+      // to this, because a grid four metres across cannot follow a kerb 15 cm
+      // tall: asked to, it puts a node at kerb height beside one at channel
+      // height and the plane between them rises through the asphalt. Measured
+      // on a 12% grade: 5 cm of ground standing in the carriageway. Flat is
+      // also what is actually under a road — a sub-base, not a moulding of the
+      // surface above it. Past the built width the section is followed again,
+      // so the ground beside a pavement stays where a pavement leaves it.
+      let minDy = 0;
+      for (const [, dy] of shape) if (dy < minDy) minDy = dy;
 
       for (let i = 0; i < points.length - 1; i++) {
         const [ax, az] = points[i];
@@ -467,20 +528,48 @@ export class Heightfield implements Terrain {
             const dist = Math.hypot(x - px, z - pz);
             if (dist > reach) continue;
 
-            // Full inside the built width, easing to nothing across the
-            // embankment. Smoothstep rather than a straight ramp, so the
-            // shoulder rounds off instead of showing a crease along its length.
-            let w = 1;
-            if (dist > halfWidth) {
-              const u = (dist - halfWidth) / blend;
-              w = 1 - u * u * (3 - 2 * u);
+            const idx = r * this.cols + c;
+            const crown = levels[i] + (levels[i + 1] - levels[i]) * t;
+
+            // The cut itself. Full inside the built width, easing to nothing
+            // across the embankment. Smoothstep rather than a straight ramp,
+            // so the shoulder rounds off instead of showing a crease.
+            if (dist <= halfWidth + blend) {
+              let w = 1;
+              if (dist > halfWidth) {
+                const u = (dist - halfWidth) / blend;
+                w = 1 - u * u * (3 - 2 * u);
+              }
+              const better = w > weight[idx]
+                || (w === weight[idx] && owner[idx] === ci && dist < claimed[idx]);
+              if (better) {
+                weight[idx] = w;
+                owner[idx] = ci;
+                claimed[idx] = dist;
+                target[idx] = crown + (dist <= halfWidth ? minDy : shapeAt(shape, dist)) - depth;
+              }
             }
 
-            const idx = r * this.cols + c;
-            if (w <= weight[idx]) continue;
-            weight[idx] = w;
-            const crown = levels[i] + (levels[i + 1] - levels[i]) * t;
-            target[idx] = crown + shapeAt(shape, dist) - depth;
+            // The shoulder, which is the whole reason ground stopped poking
+            // through the edge of a road.
+            //
+            // Grading writes heights at grid nodes, but the edge of a street
+            // is a line that never runs along one. A cell with one corner on
+            // the pavement and the other on the hillside is drawn as a plane
+            // between the two, and where the hillside corner is higher that
+            // plane rises over the road inside the cell — 0.8% of samples, up
+            // to 37 cm, and no amount of extra grid resolution removes it,
+            // only shrinks it.
+            //
+            // So the earth is forbidden to stand higher than the back of the
+            // pavement for a cell or so beyond it. Both ends of any straddling
+            // cell are then at or below the street, and a plane between two
+            // points below the road cannot rise above it. This is what a real
+            // road has too: a cutting has a shoulder before the slope starts.
+            if (dist <= halfWidth + shoulder) {
+              const here = crown + edgeDy - depth;
+              if (here < lid[idx]) lid[idx] = here;
+            }
           }
         }
       }
@@ -489,8 +578,13 @@ export class Heightfield implements Terrain {
     let changed = false;
     for (let i = 0; i < n; i++) {
       const w = weight[i];
-      if (w <= 0) continue;
-      const next = this.data[i] * (1 - w) + target[i] * w;
+      const cap = lid[i];
+      if (w <= 0 && cap === Infinity) continue;
+      let next = w > 0 ? this.data[i] * (1 - w) + target[i] * w : this.data[i];
+      // A node that is itself road bed already sits where its own section put
+      // it. Capping it again would let a neighbouring street's shoulder dig
+      // through a road that had just been built.
+      if (w < 0.999 && cap < next) next = cap;
       if (next !== this.data[i]) {
         this.data[i] = next;
         changed = true;
@@ -498,6 +592,21 @@ export class Heightfield implements Terrain {
     }
     if (changed) this.recomputeBounds();
     return changed;
+  }
+
+  /**
+   * How far past the built edge of a street the shoulder reaches, when the
+   * caller does not say.
+   *
+   * It has to be at least as wide as one cell of whatever mesh will draw this
+   * field, or a cell can still straddle from road to untouched hillside — and
+   * on a large city the mesh is capped and its cells come out coarser than
+   * this field, which is why the renderer passes its own number in. Four
+   * metres is the floor: a narrower shelf than that is not a shoulder, it is
+   * a kerb.
+   */
+  private shoulderReach(): number {
+    return Math.max(4, this.resolution * 1.6);
   }
 
   /** Call after carving; the stored bounds are otherwise stale. */

@@ -78,10 +78,13 @@ and the city came out as floating slabs.
 | Triangle winding | Counter-clockwise seen from outside. Backface culling is on; wrong winding makes geometry silently invisible. This has happened twice. |
 | OSM `layer` | A **stacking order**, not an altitude. Only `bridge=yes` lifts anything. See `world/roadprofile.ts`. |
 | Underground | `tunnel=yes` or `layer < 0` → not drawn, not in the road index. |
+| Ground level | **One surface.** Land cover is paint on the ground (`render/areafield.ts`), not a mesh over it; streets cut the ground away (`render/streetmask.ts`) rather than lying on it. Adding a second surface over the same square metre, or a constant to hold two apart, is how every recurring bug in this project started. |
 | Streets | A street is a **cross-section** (`world/street.ts`), not a stack of flat sheets. Kerb, verge and pavement have real heights and real vertical faces. Never add a "lift" constant to keep two surfaces apart — give them different places in the section instead. |
-| Grading | The earth is **cut to carry the streets** (`Heightfield.gradeStreets`) before anything is built on it. That, not a height offset, is what keeps land cover from being drawn across a road. |
+| Grading | The earth is **cut to carry the streets** (`Heightfield.gradeStreets`) before anything is built on it. Under the built width it is cut flat, to the lowest point of the section — a 4 m grid cannot follow a 15 cm kerb. |
+| The shoulder | For about one **ground-mesh** cell past a street's built edge, the earth may not stand higher than the back of the pavement. This is the only reason ground stops poking through road edges, and it must be sized from `groundGrid()` in `render/groundgrid.ts`, never from the elevation resolution — on a big city the mesh is capped and its cells are coarser. |
+| Cutting the ground | A ground quad may be dropped only where **proven** to lie under paving: four corners at least one cell inside the paved region. An overshoot is a window through the world to the sky. Never widen the cut to save triangles. |
 | Road surface | `world/roadprofile.ts` is the single source. Profiles are computed **once, on un-graded ground**, and shared by the renderer, the grading and the car. Recompute one afterwards and you get a road built on a road. |
-| Terrain grid | Elevation arrives at 20-30 m. `refinedTo(4 m)` before grading, and the ground mesh's core spacing is derived from `terrain.resolution` — the core spans **2 × radius**, so `cells = 2·radius / (CORE_FRACTION · resolution)`. Getting that factor wrong leaves the mesh ramping over features the field resolves sharply. |
+| Terrain grid | Elevation arrives at 20-30 m. `resampled(4 m, streetBounds)` before grading: refined so a street cut is a street cut, and **grown to cover every way**, because grading can only write into the array it has and OSM ways run past the bbox. The mesh grid formula lives in `render/groundgrid.ts` and nowhere else — the core spans **2 × radius**. |
 | Grip | One number, `availableGrip()`. Driving, braking and cornering all spend from it (friction circle). Never add a second grip constant. |
 | Surface colour | Every material that touches the earth comes from `render/palette.ts` and is varied by the same world-space noise. **Little contrast between materials, real variation within each.** A surface painted one flat value reads as plastic whatever the geometry is. |
 | Textures | A texture may only carry detail *finer than its own tile*. Anything at the tile's scale repeats visibly across open ground. Larger variation belongs in vertex colours, which are sampled in world space and never repeat. |
@@ -132,6 +135,13 @@ Drive them from Playwright, waiting ~9 s per frame (SwiftShader is that slow).
 - **What is the range of this noise?** Bundle the module with esbuild and run it
   in Node over 200 k samples. `fbm` turned out to have a standard deviation of
   0.275, not 1 — which is why the quantised field parcels came out invisible.
+- **Does the ground stand in the road?** `tests/ground.ts`, and it needs no
+  browser at all: the ground mesh is grid vertices sampled from the heightfield
+  and joined by triangles, which is arithmetic. Build a hard hillside, cut
+  streets into it, reconstruct the mesh the renderer would build, sample across
+  every street. This is now a regression test rather than a one-off
+  measurement, and writing it immediately found a 47 cm bug that had been in
+  the grading all along.
 
 ## Commands
 
@@ -142,19 +152,22 @@ npm test           # 100+ checks: OSM parsing, vehicle physics, driving
 npx vite preview --port 4173 --host 127.0.0.1
 ```
 
-Run `npm test` before every commit. The physics numbers in its output are
-regression detectors — if top speed or stopping distance moves, something
-changed that should not have.
+Run `npm test` before every commit. The numbers in its output are regression
+detectors, not decoration: if top speed, stopping distance, or the share of
+ground standing in a road moves, something changed that should not have.
 
 ## Where things are
 
 | Path | What |
 |---|---|
 | `src/data/` | Overpass fetch + cache, OSM parsing, offline city generator |
+| `src/render/groundgrid.ts` | The ground mesh's grid: the one place the core-spacing formula lives |
+| `src/render/areafield.ts` | Land cover, as paint the ground mesh samples |
+| `src/render/streetmask.ts` | Where paving really went, so the ground can be cut away under it |
 | `src/world/` | World model types, road profiles, street cross-sections, junctions |
 | `src/terrain/` | Heightfield, elevation tiles, waterway carving |
 | `src/sim/` | Nav graph, population, vehicle physics, driver, road index |
 | `src/render/` | Scene, camera, ground, roads, buildings, people, car |
-| `docs/GROUND-REWRITE.md` | **Read this first.** The agreed next piece of work: why the ground is being rebuilt, the staged plan, and the metrics that decide whether it came out better |
+| `docs/GROUND-REWRITE.md` | **Read this first.** Why the ground is one surface, how the street cuts it, the measurements, and what is still wrong (crossings) |
 | `docs/DECISIONS.md` | What was tried, what worked, what is still open |
 | `docs/DATA-AND-RIGHTS.md` | Licensing analysis for map data and architecture |

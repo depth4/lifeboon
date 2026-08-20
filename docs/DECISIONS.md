@@ -20,10 +20,11 @@ cross-section with kerb, verge and pavement; the earth cut to carry them;
 junctions that meet at one height; pitched roofs; street trees; one palette and
 one noise field across every surface that touches the ground.
 
-**What it still is underneath:** a regular grid with separate meshes laid over
-it. That is the next piece of work and it is written up in
-`docs/GROUND-REWRITE.md`, including how we will decide whether it came out
-better. Nothing else should start before it.
+**What it is underneath, since the ground work:** a regular grid, and *one*
+surface on it. Land cover is paint rather than a second mesh, and streets cut
+the ground away instead of lying on it. Written up in `docs/GROUND-REWRITE.md`
+with the measurements. What is left there is crossings — a junction has to
+become one polygon at one height — and that is the next piece of work.
 
 ## Settled: data sources
 
@@ -90,11 +91,11 @@ better. Nothing else should start before it.
 | Strips of road hanging in the air at junctions | The junction mask removed the side strips — including the embankment, which is the only thing tying a corridor down to the earth | A flat pad is graded under every junction at the junction's own height, so there is nothing left to hang over. |
 | "Прямоугольные плато криво ложатся друг на друга" at crossings | Every way's profile was smoothed from the terrain independently, so two streets crossing could differ by tens of centimetres — and the ground was then graded to each in turn, strongest claim winning | Junctions are nodes now. Crossings within 6 m are one node with one height, weighted by road width so a main road sets the level and side streets come to meet it; each way is bent to arrive there, spread between its junctions and capped at 0.9 m. |
 
-**Still true, and structural:** the ground is a regular grid and a street is not.
-A corridor is about thirteen metres across on a 4.9 m mesh, so the mesh cannot
-follow the cut and pokes through the street edge here and there — measured at
-0.8% of samples, up to 37 cm. Patching the height query does not fix that; only
-a ground built as one continuous surface does. See the open question below.
+**No longer true.** That paragraph used to end: *"the ground is a regular grid
+and a street is not… only a ground built as one continuous surface does"*. The
+grid stayed; what changed is that the street now cuts the grid rather than
+lying on it, and the earth is forbidden to stand higher than a street for a
+cell beyond its edge. Measured away from crossings: 0 samples of 273 484.
 
 ## Settled: the car
 
@@ -108,6 +109,23 @@ a ground built as one continuous surface does. See the open question below.
 | Reverse reuses the same physics with a one-gear box | Its 35 km/h ceiling is then the ratio and the rev limiter, not a number somebody picked. |
 | A car inside a building footprint may drive out | Footprints and streets overlap in real data — arcades, gateways, courtyard service roads. The first version welded the car to the spot forever the moment it spawned in one. |
 
+## Settled: one surface instead of three
+
+The user asked whether the architecture really had to be replaced, given that
+what they wanted was an editable world — laying roads, planting trees,
+terraforming. It did not. See `docs/GROUND-REWRITE.md` for the full argument
+and the numbers; the short form is below.
+
+| Problem | What it turned out to be | Fix |
+|---|---|---|
+| The whole recurring class: car in the pavement, grass over asphalt, earth through a road edge | Three meshes covering one square metre — terrain grid, draped land cover, street — kept apart only by a stack of lift constants and a 34 cm trench dug under every road to hide the stack | Three surfaces became one. Land cover is paint on the ground (`render/areafield.ts`); streets cut the ground away (`render/streetmask.ts`); the trench is 12 cm of road structure and nothing else |
+| Earth standing through the edge of a road, at any grid resolution | Grading writes at grid nodes; a street edge is a line that never runs along one, so a cell straddling from pavement to hillside is drawn as a plane that rises over the road. Refining the grid shrinks this and never removes it | The earth may not stand higher than the back of the pavement for about one mesh cell beyond it. Both ends of a straddling cell are then below the street, so the plane between them cannot rise above it. A cutting has a shoulder for the same reason |
+| A shoulder one *elevation* cell wide was not enough on a big city | The ground mesh grid is capped at 512, so on a 3 km city its cells come out twice as coarse as the elevation data. "One cell" has to mean the mesh's cell | The formula lives in `render/groundgrid.ts` and both the mesher and the grading read it |
+| Ground coming up through the carriageway even mid-street | A 4 m grid cannot follow a 15 cm kerb: a node at kerb height beside one at channel height makes a plane through the asphalt | Under the built width the earth is cut flat, to the lowest point of the section. Past it the section is followed again, so the surroundings still stay level |
+| 47 cm of earth standing in a street's own carriageway, on a 12% grade | Every segment claims the ground around it and a point past a segment's end is measured from that end. Ties went to whichever segment came first, so the segment *above* a node claimed it at its own higher level and the one the node lies on could not correct it | Within a way, the nearest segment wins ties. Between ways it is still widest-first, so a side street cannot dig through a main road |
+| 3.7 m of hillside standing in a road at the city edge | Grading can only write into the array it has, and ways run past the edge of the downloaded elevation — the offline city overshoots its own radius by 18 m | `Heightfield.resampled` grows the field to cover the streets, filling the new ground from the invented surroundings so there is no seam |
+| The metric could only be taken from a browser, so it was taken once and then quoted from a document | It is arithmetic. The ground mesh is grid vertices sampled from the heightfield and joined by triangles | `tests/ground.ts` builds a hard hillside, cuts streets into it, reconstructs the mesh the renderer would build and samples it. Runs in `npm test`, no GPU |
+
 ## Open questions
 
 | Question | Status |
@@ -116,9 +134,10 @@ a ground built as one continuous surface does. See the open question below.
 | Sidewalks: infer them, or leave streets bare? | User said "сначала пройдись по данным, потом делай уже нормальные тротуары". Data audit done: Alapaevsk has 0 of 187 streets with a sidewalk tag; Amsterdam has 1349 of 2477. No global dataset exists. Decision still pending. |
 | Calibrating guessed building heights | Alapaevsk: 0% surveyed heights, 97% guessed by us. GHS-BUILT-H is a 100 m global raster that could calibrate the guess. Shares plumbing with the terrain tile loader. Not started. |
 | Bridge-to-road seam | Bridge ends use raw terrain; the connecting road uses the smoothed profile. They can differ by up to 0.6 m — a visible step at every bridge. Known, not fixed. The bridge is also the one way that is not graded, so a neighbouring street's fill can rise against its abutment. |
-| A long river carved to one level | `carveWaterways` takes the lowest ground around a water polygon's whole outline and cuts the entire thing to it. For a 1.9 km river crossing 50 m of relief that is a gorge, not a river. Line waterways already get a downhill profile; polygons need the same. **This is the largest remaining "стык".** |
-| ~~One ground surface instead of layers~~ | **Decided, not open.** Agreed with the user; the reasoning, the staged plan and the metrics that decide whether it worked are in `docs/GROUND-REWRITE.md`. Start there. |
-| Junction shape | Paving now stops at a junction, but there are no corner radii, no splayed entries, no stop lines, and no junction polygon. The crossing reads correctly from above and blockily from the ground. Stage 2 of the ground rewrite. |
+| A long river carved to one level | `carveWaterways` takes the lowest ground around a water polygon's whole outline and cuts the entire thing to it. For a 1.9 km river crossing 50 m of relief that is a gorge, not a river. Line waterways already get a downhill profile; polygons need the same. Now measured: within 45 m of carved water, 1.5% of street samples have earth standing in the road, worst **4.5 m** — the largest single number anywhere in the ground metrics, and it is this, not the mesh. |
+| Land-cover boundaries are mesh-sharp | Deliberate: land cover is paint on the ground now, so a park edge is soft to within a cell. Argued for in GROUND-REWRITE §2 — a park ends in a fence and a change of mowing. If a small feature reads as mush, the answer is a thin edge ribbon where the boundary should be hard, not draped sheets again. |
+| ~~One ground surface instead of layers~~ | **Done and measured.** `docs/GROUND-REWRITE.md`. The planar partition was *not* needed and was deliberately not built: it is the wrong architecture for a world the user wants to edit. |
+| Junction shape — **now the next piece of work** | Two streets meeting on a slope each cut the earth to their own level, and where those differ one is left with ground standing in it: 0.9% of samples at crossings, worst 83 cm. Nothing else fixes this. A junction has to become one polygon at one height, built constructively from the approach directions and widths — no boolean operations. It is also what makes a crossing stop reading blockily from the ground. |
 | Ground beyond the loaded area | Terrain is invented and continuous, but there is no land cover, no field pattern and no woodland out there — one flat colour to the horizon. |
 | Land cover coverage | Measured on the offline city: 13% of the loaded area falls inside any land-cover polygon, 33% inside a building. The remaining half is bare ground colour. Real OSM is usually worse. The user has authorised inventing it from norms; nothing is built yet. |
 | Traffic | Deferred by the user. IDM + MOBIL discussed as the model. `RoadIndex` was built with this in mind. |

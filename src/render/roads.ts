@@ -29,10 +29,13 @@ import {
   roadSurfaceProfile,
   type RoadProfiles,
 } from '../world/roadprofile';
-import { streetSection, type StreetNorm, type StreetSurface } from '../world/street';
+import {
+  gradedHalfWidth, streetSection, type StreetEdge, type StreetNorm, type StreetSurface,
+} from '../world/street';
 import { inSpans, junctionSpans, spanCuts, spansFor, splitAt } from '../world/junctions';
 import { asphaltTexture, groundTexture, pavingTexture } from './textures';
 import type { OcclusionField } from './occlusion';
+import type { StreetMask } from './streetmask';
 import {
   KERB_FACE, KERB_TOP, MOWN_VERGE, PAVING, TURF, tintGround, tintHard,
 } from './palette';
@@ -285,12 +288,33 @@ const BUCKET_OF: Record<StreetSurface, Bucket> = {
  */
 const shade = (c: THREE.Color, k: number) => c.clone().multiplyScalar(k);
 
+/**
+ * The two widths of a street that are actually paved.
+ *
+ * `full` is everything built — carriageway, kerb, verge, pavement — and it is
+ * what covers the ground along a straight. `carriageway` is the asphalt and
+ * its kerb alone, which is all that survives through a junction: the verge and
+ * the pavement stop there so the crossing is not carpeted in grass. Cutting
+ * the ground needs both, because the two are interrupted on different spans.
+ */
+function pavedHalfWidths(section: StreetEdge[]): { full: number; carriageway: number } {
+  const full = gradedHalfWidth(section);
+  let carriageway = section[0].offset;
+  for (const edge of section) {
+    if (edge.surface === 'carriageway' || edge.surface === 'kerb') {
+      carriageway = Math.max(carriageway, edge.offset);
+    }
+  }
+  return { full, carriageway: Math.min(carriageway, full) };
+}
+
 export function buildRoadMeshes(
   roads: Road[],
   terrain: Terrain,
   profiles: RoadProfiles,
   norm: StreetNorm,
   occlusion: OcclusionField | null = null,
+  mask: StreetMask | null = null,
 ): RoadMeshes {
   const buckets: Record<Bucket, { pos: number[]; uv: number[]; col: number[] }> = {
     asphalt: { pos: [], uv: [], col: [] },
@@ -343,6 +367,21 @@ export function buildRoadMeshes(
     const skipCarriageway = spans.carriageway.length
       ? mid.map((d) => inSpans(spans.carriageway, d))
       : null;
+
+    // Tell the ground what was paved here, so it can cut itself away under it.
+    //
+    // This is done from the drawn geometry rather than from the centreline
+    // because the two differ exactly where it matters: paving stops at a
+    // junction, and cutting the earth out of a gap that nothing covers would
+    // leave a window through the world. A bridge is left out entirely — its
+    // deck is metres above ground that is none of its business.
+    if (mask && !road.bridge) {
+      const paved = pavedHalfWidths(section);
+      mask.stampCorridor(line.points, paved.full, skipSides);
+      if (paved.carriageway < paved.full) {
+        mask.stampCorridor(line.points, paved.carriageway, skipCarriageway);
+      }
+    }
 
     // Every edge of the section, swept. Offset 0 is the crown, shared by both
     // sides, so it is built once and both halves grow outwards from it.

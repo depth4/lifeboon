@@ -27,6 +27,8 @@ import { CameraController } from './render/camera';
 import { buildBuildingMeshes, BuildingIndex, type BuildingMeshes } from './render/buildings';
 import { buildRailwayMeshes, buildRoadMeshes, type RoadMeshes } from './render/roads';
 import { buildGround, type GroundMeshes } from './render/ground';
+import { groundGrid, shoulderFor } from './render/groundgrid';
+import { StreetMask } from './render/streetmask';
 import { buildProps, type Props } from './render/props';
 import { OcclusionField } from './render/occlusion';
 import { PeopleRenderer } from './render/people';
@@ -204,8 +206,14 @@ class App {
     // tiles are far too coarse to have a street cut into them, and every
     // consumer below — the camera, the people, the geometry — has to see the
     // same surface the streets were graded into.
+    //
+    // It is also grown to cover every street. Ways run past the edge of the
+    // downloaded elevation — OSM returns whole ways, not clipped ones, and the
+    // offline city overshoots its own radius by eighteen metres — and grading
+    // can only cut into the array it has. Bounded, so one way running out of
+    // the county does not resample the world: half again the loaded radius.
     if (world.terrain instanceof Heightfield) {
-      world.terrain = world.terrain.refinedTo(GRADING_GRID_M);
+      world.terrain = world.terrain.resampled(GRADING_GRID_M, streetBounds(world));
     }
     this.hud.setWorld(world);
     this.cameras.setTerrain(world.terrain);
@@ -213,7 +221,7 @@ class App {
     this.selected = null;
     this.hud.hideInspector();
 
-    this.hud.setLoading('Laying out the ground…', 0.6);
+    this.hud.setLoading('Cutting the terrain…', 0.6);
     await nextFrame();
     // Cut the river beds before anything is built on the result: buildings,
     // roads and bridges all need to see the carved channel, not the flat
@@ -225,27 +233,38 @@ class App {
     // numbers — the geometry, the embankments and the car. Recomputing a
     // profile after grading would describe a road built on top of a road.
     const profiles = new RoadProfiles(world.roads, world.terrain);
-    world.terrain.gradeStreets(profiles.corridors(world.roads, world.norm));
-
+    const corridors = profiles.corridors(world.roads, world.norm);
+    // The shoulder — how far beyond a street's edge the earth may not stand
+    // higher than the street — has to be at least one cell of the mesh that
+    // will draw the ground, so the mesh is asked how wide its cells are.
+    const grid = groundGrid(world.radius, world.terrain.resolution);
+    world.terrain.gradeStreets(corridors, shoulderFor(grid.spacing));
 
     // Where the buildings shut the ground in. Every surface that meets the
     // earth is shaded with this, which is what makes a wall look like it is
     // standing on the ground rather than passing through it.
-    const corridors = profiles.corridors(world.roads, world.norm);
     const occlusion = new OcclusionField(world.buildings, world.radius, corridors);
 
+    // Streets are built before the ground now, and that order is load-bearing:
+    // the ground has to be told where paving actually ended up before it can
+    // cut itself away underneath it. Working it out from the centrelines
+    // instead would be wrong exactly at junctions, where the paving stops.
+    this.hud.setLoading('Paving the streets…', 0.65);
+    await nextFrame();
+    const mask = new StreetMask(world.radius);
+    this.roadMeshes = buildRoadMeshes(
+      world.roads, world.terrain, profiles, world.norm, occlusion, mask,
+    );
+    mask.finish(grid.spacing);
+    this.worldGroup.add(this.roadMeshes.group);
+
+    this.hud.setLoading('Laying out the ground…', 0.72);
+    await nextFrame();
     this.groundMeshes = buildGround(
       world.areas, world.radius, world.seed, world.terrain,
-      water.areaLevels, world.waterways, water.flowLevels, occlusion,
+      water.areaLevels, world.waterways, water.flowLevels, occlusion, mask,
     );
     this.worldGroup.add(this.groundMeshes.group);
-
-    this.hud.setLoading('Paving the streets…', 0.7);
-    await nextFrame();
-    this.roadMeshes = buildRoadMeshes(
-      world.roads, world.terrain, profiles, world.norm, occlusion,
-    );
-    this.worldGroup.add(this.roadMeshes.group);
 
     this.railMeshes = buildRailwayMeshes(world.railways, world.terrain);
     this.worldGroup.add(this.railMeshes.group);
@@ -643,3 +662,29 @@ void app.boot();
 
 // Handy in the console when poking at a city; harmless otherwise.
 (window as unknown as { lifeboon: App }).lifeboon = app;
+
+/**
+ * The box the streets occupy, clamped to something sane around the city.
+ *
+ * The clamp is what stops a single long way — a motorway leaving the bbox, a
+ * river-following track — from deciding the size of the elevation array.
+ */
+function streetBounds(world: World): { minX: number; minZ: number; maxX: number; maxZ: number } {
+  const limit = world.radius * 1.5;
+  let minX = -world.radius;
+  let maxX = world.radius;
+  let minZ = -world.radius;
+  let maxZ = world.radius;
+  for (const road of world.roads) {
+    for (const [x, z] of road.points) {
+      if (Math.abs(x) > limit || Math.abs(z) > limit) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+  }
+  // A margin for the shoulder the grading cuts beyond each street.
+  const pad = 12;
+  return { minX: minX - pad, minZ: minZ - pad, maxX: maxX + pad, maxZ: maxZ + pad };
+}

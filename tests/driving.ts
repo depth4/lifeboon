@@ -13,6 +13,7 @@ import { RoadIndex } from '../src/sim/roadindex';
 import { CITY_MICROCAR } from '../src/sim/vehicles';
 import { CONDITION_NEW, GRAVITY, availableGrip } from '../src/sim/vehicle';
 import { FlatTerrain } from '../src/terrain/heightfield';
+import { ROAD_SURFACE_Y } from '../src/world/roadprofile';
 import { ROAD_SURFACE_Y, isUnderground, roadSurfaceProfile } from '../src/world/roadprofile';
 import type { Road, Vec2 } from '../src/world/types';
 
@@ -74,9 +75,11 @@ console.log('--- road lookup ---');
   const far = index.nearest(4000, 4000, 200);
   check('and gives up beyond the search radius', far === null);
 
-  // The renderer lifts road surfaces clear of the ground; the car must agree.
+  // The renderer stands a road a little proud of the earth beside it; the car
+  // must agree, and must agree with the constant rather than with a window
+  // somebody wrote down once.
   check('reports the drawn surface height, not the bare ground',
-    onTop !== null && onTop.surfaceY > 0.2 && onTop.surfaceY < 0.4, onTop?.surfaceY);
+    onTop !== null && near(onTop.surfaceY, ROAD_SURFACE_Y, 0.001), onTop?.surfaceY);
 }
 
 /* ------------------------------------------------------------- layering */

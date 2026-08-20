@@ -22,22 +22,32 @@ export const LAYER_HEIGHT = 5;
 /**
  * How far the carriageway sits above the ground surface.
  *
- * Land cover tops out at 0.21 m (render/ground.ts: its own lift plus up to
- * three levels of nesting), so the carriageway starts above that.
+ * A built road stands a little proud of the earth beside it — that is what the
+ * sub-base and the kerb foundation add up to. It used to be 0.28 m because
+ * land cover was drawn as a stack of sheets over the ground reaching 0.21 m,
+ * and the road had to clear all of them. Land cover is paint on the ground
+ * now, so this is back to being a fact about roads.
  */
-export const ROAD_SURFACE_Y = 0.28;
+export const ROAD_SURFACE_Y = 0.12;
 
 /**
- * How far the earth is cut below the crown of the carriageway.
+ * The thickness of the road structure: how far the earth is cut below the
+ * crown so the built section has something to sit in.
  *
- * The road structure lives in this gap — sub-base, kerb foundation — and so
- * does anything else the map happens to drape over the same ground. That is
- * the point: a park polygon crossing a street now lies buried under the road
- * instead of being drawn on top of it, and no lift constant is needed to
- * arrange the two. Deep enough to clear the land-cover stack (0.21 m) with
- * room to spare.
+ * This used to be 0.34 m and it was not a fact about roads either — it was a
+ * hiding place. Every land-cover polygon that crossed a street was drawn
+ * anyway, and the only thing stopping grass appearing across the asphalt was
+ * that the grass had been buried under a third of a metre of nothing. That
+ * trench then had to be covered by the drawn street, so anything that asked
+ * the terrain instead of the street — the car, a pedestrian, a tree — fell
+ * into it. The car sitting half a wheel deep in a pavement was exactly this.
+ *
+ * Nothing hides under a road any more, so the gap is the structure and only
+ * the structure. It is kept at twelve centimetres rather than nothing because
+ * two surfaces at the same height flicker against each other at city viewing
+ * distances, and because the road bed genuinely is below the road.
  */
-export const GRADE_DEPTH = 0.34;
+export const STRUCTURE_DEPTH = 0.12;
 
 /**
  * Spacing the ground is resampled to before streets are cut into it.
@@ -187,7 +197,7 @@ export function isUnderground(way: { tunnel: boolean; layer: number }): boolean 
  * both read it straight off the terrain — fine while nothing changed the
  * terrain. The moment streets started cutting into the ground, a profile
  * computed after grading would describe a road built on a road, sinking
- * `GRADE_DEPTH` further with every reload. So profiles are taken from the
+ * `STRUCTURE_DEPTH` further with every reload. So profiles are taken from the
  * untouched ground first, and everything downstream reads these.
  */
 export class RoadProfiles {
@@ -233,7 +243,7 @@ export class RoadProfiles {
         halfWidth: gradedHalfWidth(section),
         blend: Math.max(1.5, norm.batter),
         levels,
-        depth: GRADE_DEPTH,
+        depth: STRUCTURE_DEPTH,
         // The embankment edge is deliberately dropped: its height is whatever
         // the untouched ground turns out to be, which is the question grading
         // is answering, not an input to it.
@@ -263,7 +273,7 @@ export class RoadProfiles {
         halfWidth: node.radius,
         blend: 3,
         levels: level,
-        depth: GRADE_DEPTH,
+        depth: STRUCTURE_DEPTH,
         shape: [[0, 0]],
       });
     }
