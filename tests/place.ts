@@ -26,6 +26,7 @@ import { carveWaterways } from '../src/terrain/elevation';
 import { RoadProfiles } from '../src/world/roadprofile';
 import { gradedHalfWidth, sectionHeightAt, streetSection } from '../src/world/street';
 import { junctionHeightAt } from '../src/world/junctions';
+import { RoadNetwork } from '../src/world/network';
 import { groundGrid, shoulderFor, stretch } from '../src/render/groundgrid';
 import { GRADING_GRID_M } from '../src/world/roadprofile';
 import type { Vec2 } from '../src/world/types';
@@ -65,6 +66,29 @@ world.terrain.gradeStreets(profiles.corridors(world.roads, world.norm), shoulder
 world.terrain.gradePads(profiles.pads());
 
 console.log(`  mesh cells ${grid.spacing.toFixed(2)} m · shoulder ${shoulder.toFixed(1)} m`);
+
+/* ------------------------------------------------------------ the network */
+const net = RoadNetwork.build(world.roads);
+const turnKinds = new Map<string, number>();
+for (const t of net.turns) turnKinds.set(t.kind, (turnKinds.get(t.kind) ?? 0) + 1);
+let parkingKm = 0;
+let trafficLanes = 0;
+for (const e of net.edges) {
+  for (const l of e.lanes) {
+    if (l.kind === 'parking') parkingKm += e.length / 1000;
+    else trafficLanes++;
+  }
+}
+const arms = new Map<number, number>();
+for (const n of net.nodes) {
+  const k = n.edges.filter((e) => net.edges[e].drivable).length;
+  arms.set(k, (arms.get(k) ?? 0) + 1);
+}
+console.log(`  network: ${net.nodes.length} nodes, ${net.edges.length} edges, `
+  + `${net.streets.length} streets, ${trafficLanes} lanes, ${net.turns.length} turns `
+  + `(${[...turnKinds].map(([k, n]) => `${n} ${k}`).join(', ')})`);
+console.log(`  crossroads ${arms.get(4) ?? 0}, T-junctions ${arms.get(3) ?? 0}, `
+  + `dead ends ${arms.get(1) ?? 0} · kerbside parking ${parkingKm.toFixed(1)} km`);
 console.log(`  junctions ${profiles.junctions.length}, approaches `
   + `${profiles.junctions.reduce((n, j) => n + j.approaches.length, 0)}`);
 
