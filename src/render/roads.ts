@@ -431,6 +431,29 @@ function invert(a: boolean[] | null): boolean[] | null {
   return a ? a.map((v) => !v) : null;
 }
 
+/**
+ * Where the pavement band is laid as paving and where it is laid as grass.
+ *
+ * One function because the two are complements, and getting them the wrong way
+ * round is not a subtle failure: it draws our pavement *only* where somebody
+ * has already mapped one and turns it to grass everywhere else, which is a
+ * doubled pavement here and a missing pavement there — both of the things the
+ * user reported, from one swapped argument. It shipped like that once. The
+ * only way to make that unrepeatable is to have a single place that decides,
+ * with a name that says which is which, and a test on it.
+ */
+export function pavementBands(
+  interrupted: boolean[] | null,
+  shadowed: boolean[],
+): { paving: boolean[] | null; verge: boolean[] | null } {
+  return {
+    // Paving is not laid where a surveyed footway already runs.
+    paving: combine(interrupted, shadowed),
+    // Grass takes exactly the stretches the paving gave up.
+    verge: combine(interrupted, invert(shadowed)),
+  };
+}
+
 /** Which way the way runs at a run end, as a unit vector along the centreline. */
 function tangentAt(points: Vec2[], end: RunEnd): Vec2 {
   const i = end.out > 0 ? end.at - 1 : end.at;
@@ -533,11 +556,24 @@ function emitJunction(
   const [paveIn, paveOut] = stripColors('pavement', cls, false);
   const [, earth] = stripColors('batter', cls, false);
 
-  const normalAt = (p: Vec2): Vec2 => {
-    const dx = p[0] - shape.x;
-    const dz = p[1] - shape.z;
+  /**
+   * Which way is "outwards" from a stretch of the boundary.
+   *
+   * Perpendicular to that stretch, not radial from the middle. Radial was the
+   * first attempt and it produces slivers: along the ends of a kerb fillet the
+   * boundary runs almost straight out from the centre, so a band offset along
+   * the radius is offset almost *along itself* and collapses into a spike.
+   * Those spikes are the torn grey shapes that were showing up in the corners
+   * of every junction.
+   */
+  const outwardOf = (a: Vec2, b: Vec2): Vec2 => {
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
     const len = Math.hypot(dx, dz) || 1;
-    return [dx / len, dz / len];
+    const n: Vec2 = [-dz / len, dx / len];
+    const mx = (a[0] + b[0]) / 2 - shape.x;
+    const mz = (a[1] + b[1]) / 2 - shape.z;
+    return n[0] * mx + n[1] * mz >= 0 ? n : [-n[0], -n[1]];
   };
 
   for (let i = 0; i < ring.length; i++) {
@@ -545,10 +581,10 @@ function emitJunction(
     const j = (i + 1) % ring.length;
     const a = ring[i];
     const b = ring[j];
-    const na = normalAt(a);
-    const nb = normalAt(b);
     const span = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    if (span < 1e-4) continue;
+    if (span < 0.05) continue;
+    const na = outwardOf(a, b);
+    const nb = na;
     const ya = ringY[i];
     const yb = ringY[j];
     const kerbA = ya + reveal;
@@ -846,27 +882,36 @@ export function buildRoadMeshes(
       const acrossIn = section[k - 1].offset;
       const acrossOut = edge.offset;
       const pavementHere = edge.surface === 'pavement' && pavedElsewhere !== null;
+      const bands = pavementHere
+        ? pavementBands(skip, pavedElsewhere)
+        : { paving: skip, verge: null };
 
       // Argument order is load-bearing: the first rail must be the one on the
       // left of travel. On the right-hand side that is the inner rail; on the
       // left-hand side it is the outer one, and the colours swap with it.
       emitStrip(prevRight, railRight, inner, outer, soft, occlusion,
         bucket.pos, bucket.uv, bucket.col, uvScale, acrossIn, acrossOut,
-        combine(skip, pavementHere ? invert(pavedElsewhere) : null));
+        bands.paving);
       emitStrip(railLeft, prevLeft, outer, inner, soft, occlusion,
         bucket.pos, bucket.uv, bucket.col, uvScale, acrossOut, acrossIn,
-        combine(skip, pavementHere ? invert(pavedElsewhere) : null));
+        bands.paving);
 
       // The same band again as verge, over the stretches the first call left
       // out: where the map already has a footway, this strip is grass.
+      //
+      // The two skip lists are complements and the order of them is the whole
+      // behaviour. Written the other way round — and it shipped that way once
+      // — the paving appears *only* where somebody's footway already is and
+      // the verge takes over everywhere else, which is both complaints at
+      // once: two pavements side by side here, and no pavement at all there.
       if (pavementHere && pavedElsewhere) {
         const [vergeIn, vergeOut] = stripColors('verge', road.cls, false);
         emitStrip(prevRight, railRight, vergeIn, vergeOut, true, occlusion,
           buckets.soil.pos, buckets.soil.uv, buckets.soil.col,
-          UV_SCALE.verge, acrossIn, acrossOut, combine(skip, pavedElsewhere));
+          UV_SCALE.verge, acrossIn, acrossOut, bands.verge);
         emitStrip(railLeft, prevLeft, vergeOut, vergeIn, true, occlusion,
           buckets.soil.pos, buckets.soil.uv, buckets.soil.col,
-          UV_SCALE.verge, acrossOut, acrossIn, combine(skip, pavedElsewhere));
+          UV_SCALE.verge, acrossOut, acrossIn, bands.verge);
       }
 
       // Close both ends of every stretch that was actually drawn. A vertical

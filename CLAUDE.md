@@ -86,6 +86,21 @@ new bites, and delete anything that stops being true.
 
 **Measure, do not guess.**
 
+…and **look at the picture before committing.** Those are two rules, not one,
+and the second was learnt the hard way. A change went out with the whole test
+suite green that drew the street's pavement *only* where the map already had a
+footway and turned it to grass everywhere else — a doubled pavement in one
+place and a missing one in the next, from one swapped argument. Every number
+was fine, because no number was measuring what was drawn. The user found it by
+looking, one release later, and asked why nothing ever changes from version to
+version. It was a fair question: the answer was that the visible half of the
+work was never checked.
+
+The capture makes checking it cheap now. Load the user's own town in the
+sandbox browser (`.tmp/look.mjs` pattern: import the file through the About
+panel, put the camera where the change should show, screenshot) and look. Two
+minutes, and it catches the class of bug that no ground metric can.
+
 Every rendering bug here was found by querying the live scene from Playwright
 — counting normal signs, sampling vertex colours, comparing heights — not by
 looking at it. Three times a confident-sounding diagnosis was wrong and only
