@@ -338,18 +338,29 @@ export class DrivenVehicle {
    * one, otherwise the bare ground.
    *
    * "Street" means the whole built width — carriageway, kerb, verge, pavement
-   * — and not just the asphalt. The earth beneath a street is cut a third of a
-   * metre below its crown to carry it, and the only thing covering that cut is
-   * the drawn street itself. Asking for the terrain one centimetre past the
-   * kerb therefore dropped the car into a trench it could see the far side of:
-   * half a wheel buried in ground that the picture showed as a pavement.
+   * — and not just the asphalt. The earth beneath a street is cut below its
+   * crown to carry it and the drawn street is the only thing covering that
+   * cut, so asking for the terrain one centimetre past the kerb dropped the
+   * car into a trench it could see the far side of: half a wheel buried in
+   * ground that the picture showed as a pavement.
    *
    * The grip test is separate and still uses the carriageway, because driving
    * onto the verge should feel like driving onto a verge.
    */
   private restingHeight(x: number, z: number): number {
-    const hit = this.roads?.nearest(x, z, 40);
-    if (hit && hit.distance <= hit.streetHalfWidth + ROAD_EDGE_TOLERANCE) return hit.surfaceY;
+    const street = this.roads?.nearest(x, z, 40);
+    if (street && street.distance <= street.streetHalfWidth + ROAD_EDGE_TOLERANCE) {
+      return street.surfaceY;
+    }
+    // Then any paving at all, drivable or not. A pedestrian square is built
+    // exactly like a street — earth cut away, paving laid a little above it —
+    // so a car parked on one has to stand on the paving. Asking only about
+    // drivable ways put it on the earth instead, 20 cm down, and the square
+    // closed over the roof.
+    const paved = this.roads?.nearest(x, z, 25, false);
+    if (paved && paved.distance <= paved.streetHalfWidth + ROAD_EDGE_TOLERANCE) {
+      return paved.surfaceY;
+    }
     return this.terrain.heightAt(x, z);
   }
 

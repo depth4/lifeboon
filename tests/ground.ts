@@ -23,6 +23,7 @@ import { Heightfield } from '../src/terrain/heightfield';
 import { RoadProfiles, STRUCTURE_DEPTH } from '../src/world/roadprofile';
 import { NORM_RU, gradedHalfWidth, sectionHeightAt, streetSection } from '../src/world/street';
 import { groundGrid, shoulderFor, stretch } from '../src/render/groundgrid';
+import { RoadIndex } from '../src/sim/roadindex';
 import type { Road, Vec2 } from '../src/world/types';
 
 let failures = 0;
@@ -317,6 +318,44 @@ check('and a crossing is mostly below its paving even so',
   withIt.junctions.poking < 0.05, withIt.junctions.poking);
 check('and the street is not left standing on a plinth either',
   -withIt.straights.median < STRUCTURE_DEPTH + 0.25, -withIt.straights.median);
+
+/* ------------------------------------------- what a car actually stands on */
+
+/**
+ * Paving is drawn above the earth, so anything standing on it has to be given
+ * the paving's height and not the ground's. A pedestrian square is built
+ * exactly like a street — earth cut away, slabs laid on top — but it is not
+ * drivable, and while the road index held only drivable ways a car parked on
+ * one was put on the earth instead and the square closed over its roof.
+ */
+console.log('\n--- what a car stands on ---');
+{
+  const flat = new Heightfield(new Float32Array(101 * 101), 101, 101, -200, -200, 4);
+  const paved = (id: string, cls: Road['cls'], drivable: boolean, z: number): Road => ({
+    id, points: [[-150, z], [0, z], [150, z]], cls, width: 6, lanes: 2,
+    oneway: false, layer: 0, bridge: false, tunnel: false, walkable: true,
+    drivable, isSidewalkLine: false, isCrossing: false,
+  });
+  const ways = [paved('street', 'residential', true, 0), paved('square', 'pedestrian', false, 80)];
+  const profiles = new RoadProfiles(ways, flat);
+  flat.gradeStreets(profiles.corridors(ways, NORM_RU), 6.4);
+  const index = new RoadIndex(ways, flat, profiles, NORM_RU);
+
+  for (const way of ways) {
+    const z = way.points[0][1];
+    const drawn = profiles.get(way)![1] + sectionHeightAt(streetSection(way, NORM_RU), 0);
+    const hit = index.nearest(0, z, 40, false);
+    const stands = hit && hit.distance <= hit.streetHalfWidth + 1 ? hit.surfaceY : flat.heightAt(0, z);
+    console.log(`  ${way.id}: paving at ${drawn.toFixed(3)} m, car stands at ${stands.toFixed(3)} m`);
+    check(`a car stands on the ${way.id} rather than in it`,
+      Math.abs(stands - drawn) < 0.001, stands - drawn);
+  }
+
+  check('but only drivable ways count as a road to drive on',
+    index.roadCount === 1, index.roadCount);
+  check('and a square is not offered as one',
+    index.nearest(0, 80, 40)?.road.id !== 'square', index.nearest(0, 80, 40)?.road.id ?? null);
+}
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall checks passed');
 if (failures) process.exit(1);

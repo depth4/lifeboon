@@ -292,7 +292,7 @@ class App {
     // them either — otherwise you get grip and a street name while visibly
     // driving across a field.
     this.roadIndex = new RoadIndex(
-      world.roads.filter((r) => r.drivable && !isUnderground(r)),
+      world.roads.filter((r) => !isUnderground(r)),
       world.terrain, profiles, world.norm,
     );
     this.hud.setDriveAvailable(this.roadIndex.roadCount > 0);

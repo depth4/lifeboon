@@ -1,10 +1,17 @@
 /**
  * "Which street am I on, and which way does it run?"
  *
- * A grid hash over every segment of every drivable way. Two things need this:
+ * A grid hash over every segment of every drawn way. Two things need this:
  * putting a car down on a road in the first place, and telling — sixty times a
  * second — whether the wheels are still on asphalt. Later, traffic will need
  * exactly the same query to find the lane ahead.
+ *
+ * Footways and pedestrian areas are indexed too, and that is not for driving
+ * on. They are paved, so they are drawn a little above the earth, and anything
+ * standing on one has to stand on the paving rather than on the ground beneath
+ * it. With only drivable ways here, a car parked on a square sank 20 cm and
+ * the paving closed over it. Driving still only ever asks about drivable
+ * ways — `nearest` filters them out unless asked not to.
  *
  * Segments are registered into every cell their bounding box touches, so a
  * 200 m straight is found from anywhere along it rather than only near its
@@ -44,6 +51,8 @@ interface Segment {
   road: number;
   /** Index of this segment's first point within the way. */
   at: number;
+  /** Cars may use this one. Footways and squares are indexed but not drivable. */
+  drivable: boolean;
   ax: number;
   az: number;
   bx: number;
@@ -87,7 +96,8 @@ export class RoadIndex {
 
         const index = this.segments.length;
         this.segments.push({
-          road: roadIndex, at: i, ax: a[0], az: a[1], bx: b[0], bz: b[1],
+          road: roadIndex, at: i, drivable: road.drivable,
+          ax: a[0], az: a[1], bx: b[0], bz: b[1],
         });
 
         const minX = Math.floor(Math.min(a[0], b[0]) / CELL_M);
@@ -106,15 +116,16 @@ export class RoadIndex {
     });
   }
 
+  /** How many ways a car could actually use — what "can you drive here" means. */
   get roadCount(): number {
-    return this.roads.length;
+    return this.roads.reduce((n, road) => n + (road.drivable ? 1 : 0), 0);
   }
 
   /**
    * Nearest point on any indexed way, searching outwards ring by ring and
    * stopping as soon as another ring cannot possibly hold anything closer.
    */
-  nearest(x: number, z: number, maxRadius = 120): RoadHit | null {
+  nearest(x: number, z: number, maxRadius = 120, drivableOnly = true): RoadHit | null {
     const cx = Math.floor(x / CELL_M);
     const cz = Math.floor(z / CELL_M);
     const maxRings = Math.ceil(maxRadius / CELL_M);
@@ -131,6 +142,7 @@ export class RoadIndex {
           if (!bucket) continue;
           for (const index of bucket) {
             const seg = this.segments[index];
+            if (drivableOnly && !seg.drivable) continue;
             const vx = seg.bx - seg.ax;
             const vz = seg.bz - seg.az;
             const lenSq = vx * vx + vz * vz;
