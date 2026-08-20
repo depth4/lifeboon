@@ -11,6 +11,20 @@ than letting the file rot.
 
 ---
 
+## Where the project stands
+
+Deployed at `depth4.github.io/lifeboon` from `claude/world-map-life-simulator-wthhom`.
+The last session took the picture from "багованная каша" — the user's words, and
+fair — to something that reads as a town: streets built from a real
+cross-section with kerb, verge and pavement; the earth cut to carry them;
+junctions that meet at one height; pitched roofs; street trees; one palette and
+one noise field across every surface that touches the ground.
+
+**What it still is underneath:** a regular grid with separate meshes laid over
+it. That is the next piece of work and it is written up in
+`docs/GROUND-REWRITE.md`, including how we will decide whether it came out
+better. Nothing else should start before it.
+
 ## Settled: data sources
 
 | Question | Answer | Why |
@@ -103,8 +117,8 @@ a ground built as one continuous surface does. See the open question below.
 | Calibrating guessed building heights | Alapaevsk: 0% surveyed heights, 97% guessed by us. GHS-BUILT-H is a 100 m global raster that could calibrate the guess. Shares plumbing with the terrain tile loader. Not started. |
 | Bridge-to-road seam | Bridge ends use raw terrain; the connecting road uses the smoothed profile. They can differ by up to 0.6 m — a visible step at every bridge. Known, not fixed. The bridge is also the one way that is not graded, so a neighbouring street's fill can rise against its abutment. |
 | A long river carved to one level | `carveWaterways` takes the lowest ground around a water polygon's whole outline and cuts the entire thing to it. For a 1.9 km river crossing 50 m of relief that is a gorge, not a river. Line waterways already get a downhill profile; polygons need the same. **This is the largest remaining "стык".** |
-| **One ground surface instead of layers** | The ground is a regular grid; roads, kerbs, pavements and land cover are separate meshes laid over it, each tied down by its own embankment. That is why the grid can poke through a street, why a corridor edge can hang in the air where the embankment is interrupted, and why nothing that walks or drives can stand on a pavement without being told about it separately. The answer is a planar partition — junction polygons, carriageway polygons, kerb and verge bands, land cover, terrain filler — where every square metre belongs to exactly one polygon, triangulated with a constrained Delaunay triangulation so shared edges share vertices. Heights are decided on the street network first, so a junction has one height by construction. Not started. It is the largest single piece of work left and it deletes more than it adds. |
-| Junction shape | Paving now stops at a junction, but there are no corner radii, no splayed entries, no stop lines, and no junction polygon. The crossing reads correctly from above and blockily from the ground. |
+| ~~One ground surface instead of layers~~ | **Decided, not open.** Agreed with the user; the reasoning, the staged plan and the metrics that decide whether it worked are in `docs/GROUND-REWRITE.md`. Start there. |
+| Junction shape | Paving now stops at a junction, but there are no corner radii, no splayed entries, no stop lines, and no junction polygon. The crossing reads correctly from above and blockily from the ground. Stage 2 of the ground rewrite. |
 | Ground beyond the loaded area | Terrain is invented and continuous, but there is no land cover, no field pattern and no woodland out there — one flat colour to the horizon. |
 | Land cover coverage | Measured on the offline city: 13% of the loaded area falls inside any land-cover polygon, 33% inside a building. The remaining half is bare ground colour. Real OSM is usually worse. The user has authorised inventing it from norms; nothing is built yet. |
 | Traffic | Deferred by the user. IDM + MOBIL discussed as the model. `RoadIndex` was built with this in mind. |
