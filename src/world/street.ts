@@ -143,10 +143,11 @@ function isStreet(road: Road): boolean {
 /**
  * The half-section of a way, walking outwards from the centreline.
  *
- * Only one side is described; the renderer mirrors it. `sidewalk === 'no'` is
- * the one tag honoured here, because it is a survey result rather than a
- * silence — a missing tag still means "nobody looked", and guessing a pavement
- * for those is the existing behaviour and a separate open question.
+ * Only one side is described; the renderer mirrors it. `no` and `separate` are
+ * the tags honoured here, because both are survey results rather than silence:
+ * one says there is no pavement, the other says there is one and it is mapped
+ * as a way of its own. A missing tag still means "nobody looked", and guessing
+ * a pavement for those is the existing behaviour.
  */
 export function streetSection(road: Road, norm: StreetNorm): StreetEdge[] {
   const half = road.width / 2;
@@ -205,7 +206,13 @@ export function streetSection(road: Road, norm: StreetNorm): StreetEdge[] {
 
   let offset = half + norm.kerbWidth;
   const verge = norm.verge[road.cls];
-  const pavement = road.sidewalk === 'no' ? 0 : norm.pavement[road.cls];
+  // `no` is a survey result — somebody looked and there is no pavement.
+  // `separate` means the pavement exists and is mapped as a way of its own,
+  // which `world/sidewalks.ts` also sets when it finds one running alongside.
+  // Either way the street must not grow one: the first would be a lie, the
+  // second would be a second pavement beside the real one.
+  const mapped = road.sidewalk === 'no' || road.sidewalk === 'separate';
+  const pavement = mapped ? 0 : norm.pavement[road.cls];
 
   if (verge > 0) {
     // Soil sits a little below the paving it borders, which is why a verge

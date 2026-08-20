@@ -37,6 +37,7 @@ import {
   type JunctionShape,
 } from '../world/junctions';
 import { asphaltTexture, groundTexture, pavingTexture } from './textures';
+import { MappedPaths } from '../world/sidewalks';
 import type { OcclusionField } from './occlusion';
 import type { StreetMask } from './streetmask';
 import {
@@ -418,6 +419,18 @@ function quadBothWays(
   for (const i of [0, 2, 1, 0, 3, 2]) push(i);
 }
 
+/** Two skip lists at once: a segment is skipped when either says so. */
+function combine(a: boolean[] | null, b: boolean[] | null): boolean[] | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a.map((v, i) => v || b[i]);
+}
+
+/** The complement of a skip list. */
+function invert(a: boolean[] | null): boolean[] | null {
+  return a ? a.map((v) => !v) : null;
+}
+
 /** Which way the way runs at a run end, as a unit vector along the centreline. */
 function tangentAt(points: Vec2[], end: RunEnd): Vec2 {
   const i = end.out > 0 ? end.at - 1 : end.at;
@@ -727,6 +740,13 @@ export function buildRoadMeshes(
   // two away from it, which is a gap you can see through.
   const junctions = spansFromJunctions(roads, profiles.junctions);
 
+  // Pavements somebody has already surveyed, so this does not draw a second
+  // one beside each of them.
+  const mapped = new MappedPaths(roads);
+  if (mapped.count) {
+    console.info(`[streets] ${mapped.count} mapped footways; streets defer to them`);
+  }
+
   // The junctions themselves, drawn once each as a single surface.
   for (const shape of profiles.junctions) {
     emitJunction(shape, roads, norm, terrain, buckets, occlusion);
@@ -739,6 +759,7 @@ export function buildRoadMeshes(
 
     const rawProfile = profiles.get(road) ?? roadSurfaceProfile(road, terrain);
     const section = streetSection(road, norm);
+    const sectionReach = gradedHalfWidth(section) + 3;
     const spans = spansFor(junctions, road);
 
     // Split the way exactly where each junction begins, so an interruption is
@@ -757,6 +778,18 @@ export function buildRoadMeshes(
       : null;
     const skipCarriageway = spans.carriageway.length
       ? mid.map((d) => inSpans(spans.carriageway, d))
+      : null;
+
+    // Stretches where somebody's mapped footway already runs beside this
+    // street. Our own pavement band stays in the section — the kerb, the
+    // levels and the grading all depend on it — but it is laid as verge there
+    // instead of as paving, so the street has one pavement and not two.
+    const pavedElsewhere = mapped.count && !road.bridge
+      ? line.points.slice(0, -1).map((_, i) => {
+        const a = line.points[i];
+        const b = line.points[i + 1];
+        return mapped.covers((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, sectionReach);
+      })
       : null;
 
     // Tell the ground what was paved here, so it can cut itself away under it.
@@ -812,14 +845,29 @@ export function buildRoadMeshes(
         : edge.surface === 'carriageway' ? skipCarriageway : skipSides;
       const acrossIn = section[k - 1].offset;
       const acrossOut = edge.offset;
+      const pavementHere = edge.surface === 'pavement' && pavedElsewhere !== null;
 
       // Argument order is load-bearing: the first rail must be the one on the
       // left of travel. On the right-hand side that is the inner rail; on the
       // left-hand side it is the outer one, and the colours swap with it.
       emitStrip(prevRight, railRight, inner, outer, soft, occlusion,
-        bucket.pos, bucket.uv, bucket.col, uvScale, acrossIn, acrossOut, skip);
+        bucket.pos, bucket.uv, bucket.col, uvScale, acrossIn, acrossOut,
+        combine(skip, pavementHere ? invert(pavedElsewhere) : null));
       emitStrip(railLeft, prevLeft, outer, inner, soft, occlusion,
-        bucket.pos, bucket.uv, bucket.col, uvScale, acrossOut, acrossIn, skip);
+        bucket.pos, bucket.uv, bucket.col, uvScale, acrossOut, acrossIn,
+        combine(skip, pavementHere ? invert(pavedElsewhere) : null));
+
+      // The same band again as verge, over the stretches the first call left
+      // out: where the map already has a footway, this strip is grass.
+      if (pavementHere && pavedElsewhere) {
+        const [vergeIn, vergeOut] = stripColors('verge', road.cls, false);
+        emitStrip(prevRight, railRight, vergeIn, vergeOut, true, occlusion,
+          buckets.soil.pos, buckets.soil.uv, buckets.soil.col,
+          UV_SCALE.verge, acrossIn, acrossOut, combine(skip, pavedElsewhere));
+        emitStrip(railLeft, prevLeft, vergeOut, vergeIn, true, occlusion,
+          buckets.soil.pos, buckets.soil.uv, buckets.soil.col,
+          UV_SCALE.verge, acrossOut, acrossIn, combine(skip, pavedElsewhere));
+      }
 
       // Close both ends of every stretch that was actually drawn. A vertical
       // face has no place in the palette of its own, so it takes the band's

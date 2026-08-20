@@ -342,6 +342,16 @@ export interface Approach {
   sign: number;
   /** Surface height at the mouth. Filled in by `RoadProfiles`. */
   mouthY: number;
+  /**
+   * How steeply the street climbs away from the mouth, as a gradient.
+   *
+   * The junction surface has to keep going past its own boundary, because the
+   * earth is graded a little wider than the junction is drawn and a mesh cell
+   * straddles the edge. Held flat out there it holds the ground up while the
+   * street descends — 19 cm of earth standing in a road, measured — so it
+   * carries on at the gradient of whichever street it is next to instead.
+   */
+  mouthSlope: number;
 }
 
 export interface JunctionShape {
@@ -368,7 +378,12 @@ export interface JunctionShape {
   /** How far the flat pad under the junction reaches. */
   radius: number;
   approaches: Approach[];
-  /** Boundary, walking anticlockwise in bearing order. */
+  /**
+   * The subset of `approaches` that shapes the boundary, in ring order.
+   * Two streets leaving at nearly the same bearing share one mouth.
+   */
+  ringApproaches: Approach[];
+  /** Boundary, walking in bearing order. */
   ring: Vec2[];
   /** For each edge ring[i] → ring[i+1]: true when it is an open mouth. */
   mouth: boolean[];
@@ -397,6 +412,50 @@ const MAX_STOP_WIDTHS = 3;
 const STUB_M = 1.5;
 /** Points sampled along each rounded corner, endpoints excluded. */
 const CORNER_SAMPLES = 3;
+
+/** Two approaches closer than this in bearing share a mouth. */
+const MERGE_BEARING = 0.45;
+
+/** The absolute angle between two unit directions, in radians. */
+function bearingGap(a: Vec2, b: Vec2): number {
+  const dot = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1]));
+  return Math.acos(dot);
+}
+
+/** Where two rays meet, with how far along each. Null when parallel. */
+function intersect(
+  from: Vec2, fromDir: Vec2, to: Vec2, toDir: Vec2,
+): { at: Vec2; sa: number; sb: number } | null {
+  const denom = fromDir[0] * toDir[1] - fromDir[1] * toDir[0];
+  if (Math.abs(denom) < 1e-6) return null;
+  const dx = to[0] - from[0];
+  const dz = to[1] - from[1];
+  const sa = (dx * toDir[1] - dz * toDir[0]) / denom;
+  const sb = (dx * fromDir[1] - dz * fromDir[0]) / denom;
+  return { at: [from[0] + fromDir[0] * sa, from[1] + fromDir[1] * sa], sa, sb };
+}
+
+/**
+ * The rounded corner between two tangent points.
+ *
+ * A quadratic through the point where the kerb lines meet. Because the ends
+ * are the tangent points, the curve leaves each kerb line along that line —
+ * which is what a poured kerb radius does — without any of the degenerate
+ * cases a fitted arc has, every one of which ends as a NaN in a vertex buffer.
+ */
+function curveBetween(from: Vec2, to: Vec2, control: Vec2 | null): Vec2[] {
+  const c = control ?? [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
+  const out: Vec2[] = [];
+  for (let i = 1; i <= CORNER_SAMPLES; i++) {
+    const u = i / (CORNER_SAMPLES + 1);
+    const v = 1 - u;
+    out.push([
+      v * v * from[0] + 2 * u * v * c[0] + u * u * to[0],
+      v * v * from[1] + 2 * u * v * c[1] + u * u * to[1],
+    ]);
+  }
+  return out;
+}
 
 /** Cumulative length along a way, one entry per point. */
 function chainage(points: Vec2[]): number[] {
@@ -472,10 +531,10 @@ export function buildJunctions(
       const [tx, tz] = tangentAt(points, chain, at);
       const half = roads[road].width / 2;
       if (total - at > STUB_M) {
-        approaches.push({ road, at, dir: [tx, tz], half, stop: half, sign: 1, mouthY: 0 });
+        approaches.push({ road, at, dir: [tx, tz], half, stop: half, sign: 1, mouthY: 0, mouthSlope: 0 });
       }
       if (at > STUB_M) {
-        approaches.push({ road, at, dir: [-tx, -tz], half, stop: half, sign: -1, mouthY: 0 });
+        approaches.push({ road, at, dir: [-tx, -tz], half, stop: half, sign: -1, mouthY: 0, mouthSlope: 0 });
       }
     }
     if (approaches.length < 2) continue;
@@ -499,78 +558,123 @@ export function buildJunctions(
     approaches.sort((p, q) =>
       Math.atan2(p.dir[1], p.dir[0]) - Math.atan2(q.dir[1], q.dir[0]));
 
-    const ring: Vec2[] = [];
-    const mouth: boolean[] = [];
-    for (let i = 0; i < approaches.length; i++) {
-      const a = approaches[i];
-      const b = approaches[(i + 1) % approaches.length];
-      // Perpendicular at ninety degrees further round, so walking the
-      // approaches in bearing order walks the ring the same way.
+    // Two streets leaving at nearly the same bearing are one mouth, not two.
+    // Kept in `approaches` so both still have their paving interrupted, but
+    // only one of them shapes the boundary: two mouths a few degrees apart
+    // overlap, and an overlapping mouth is a ring that folds over itself.
+    const corners: Approach[] = [];
+    for (const a of approaches) {
+      const last = corners[corners.length - 1];
+      if (last && bearingGap(last.dir, a.dir) < MERGE_BEARING) {
+        if (a.half > last.half) corners[corners.length - 1] = a;
+        continue;
+      }
+      corners.push(a);
+    }
+    if (corners.length > 2
+      && bearingGap(corners[0].dir, corners[corners.length - 1].dir) < MERGE_BEARING) {
+      corners.pop();
+    }
+    if (corners.length < 2) continue;
+
+    // The boundary, corner by corner.
+    //
+    // Each approach ends at a stop line square across it; between one stop
+    // line and the next runs the kerb fillet. The fillet is tangent to both
+    // kerb lines where there is room for it to be, and where there is not it
+    // simply gets smaller — which is the part that had to be learnt the hard
+    // way. On an ordinary crossroads of two 6.5 m streets the whole junction
+    // is 6.5 m across and a 3 m kerb radius does not fit in it; asking for one
+    // anyway put the tangent points behind the middle of the junction, and the
+    // corner collapsed into a sliver whose orientation was decided by rounding
+    // error. 265 of 454 junctions in a real town came out as folded polygons —
+    // which is what the dark triangles and the strips hanging in the air were.
+    const n = corners.length;
+    const meets: Array<{ at: Vec2; sa: number; sb: number } | null> = new Array(n);
+    const backA = new Float64Array(n);
+    const backB = new Float64Array(n);
+
+    for (let i = 0; i < n; i++) {
+      const a = corners[i];
+      const b = corners[(i + 1) % n];
       const pa: Vec2 = [-a.dir[1], a.dir[0]];
       const pb: Vec2 = [-b.dir[1], b.dir[0]];
+      const meet = intersect(
+        [x + pa[0] * a.half, z + pa[1] * a.half], a.dir,
+        [x - pb[0] * b.half, z - pb[1] * b.half], b.dir,
+      );
+      if (meet && meet.sa > 0.05 && meet.sb > 0.05 && meet.sa < 60 && meet.sb < 60) {
+        meets[i] = meet;
+        // The kerb radius reaches *outwards*, and getting that backwards is
+        // what folded every junction. Where two streets cross, the paved area
+        // is the union of their two bands and the corner between them is a
+        // reflex one — the kerb curves out into the grass quadrant, adding
+        // pavement rather than cutting the crossing short. So the tangent
+        // points lie further along each kerb line than the point where the two
+        // lines meet, and the fillet bulges back towards that point.
+        const fillet = Math.max(1.2, Math.min(5, Math.min(a.half, b.half) * 0.8));
+        backA[i] = meet.sa + fillet;
+        backB[i] = meet.sb + fillet;
+      } else {
+        // Parallel kerb lines: a bend, or one way ending against another.
+        meets[i] = null;
+        backA[i] = a.half + 2;
+        backB[i] = b.half + 2;
+      }
+    }
 
-      const near: Vec2 = [x + a.dir[0] * a.stop - pa[0] * a.half,
-                          z + a.dir[1] * a.stop - pa[1] * a.half];
-      const far: Vec2 = [x + a.dir[0] * a.stop + pa[0] * a.half,
-                         z + a.dir[1] * a.stop + pa[1] * a.half];
-      const nextNear: Vec2 = [x + b.dir[0] * b.stop - pb[0] * b.half,
-                              z + b.dir[1] * b.stop - pb[1] * b.half];
+    // Where each approach's stop line sits: beyond both of its own corners.
+    const stops = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const before = (i + n - 1) % n;
+      stops[i] = Math.min(MAX_STOP_M, Math.max(
+        corners[i].half, backA[i], backB[before]));
+      corners[i].stop = stops[i];
+    }
 
-      ring.push(near);
-      mouth.push(true);      // near -> far is the mouth of this approach
-      ring.push(far);
+    const ring: Vec2[] = [];
+    const mouth: boolean[] = [];
+    const mouthEnds: Array<{ left: Vec2; right: Vec2 }> = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = corners[i];
+      const pa: Vec2 = [-a.dir[1], a.dir[0]];
+      const base: Vec2 = [x + a.dir[0] * stops[i], z + a.dir[1] * stops[i]];
+      mouthEnds[i] = {
+        right: [base[0] - pa[0] * a.half, base[1] - pa[1] * a.half],
+        left: [base[0] + pa[0] * a.half, base[1] + pa[1] * a.half],
+      };
+    }
 
-      for (const p of cornerPoints(far, a.dir, nextNear, b.dir)) {
+    for (let i = 0; i < n; i++) {
+      const next = (i + 1) % n;
+      ring.push(mouthEnds[i].right);
+      mouth.push(true);                 // right -> left is this approach's mouth
+      ring.push(mouthEnds[i].left);
+      for (const p of curveBetween(
+        mouthEnds[i].left, mouthEnds[next].right, meets[i]?.at ?? null)) {
         ring.push(p);
         mouth.push(false);
       }
-      mouth.push(false);     // last corner point -> next approach's near point
+      mouth.push(false);                // last fillet point -> next mouth
+    }
+
+    // An approach merged into another shares its stop, so its paving is still
+    // interrupted for the whole width of the mouth it arrives at.
+    for (const a of approaches) {
+      if (corners.includes(a)) continue;
+      let best = a.half;
+      for (const c of corners) {
+        if (bearingGap(c.dir, a.dir) < MERGE_BEARING) best = Math.max(best, c.stop);
+      }
+      a.stop = best;
     }
 
     let radius = 0;
     for (const p of ring) radius = Math.max(radius, Math.hypot(p[0] - x, p[1] - z));
     out.push({
       x, z, height: 0, ringY: new Array<number>(ring.length).fill(0),
-      radius, approaches, ring, mouth,
+      radius, approaches, ringApproaches: corners, ring, mouth,
     });
-  }
-  return out;
-}
-
-/**
- * The rounded corner between the end of one approach and the start of the
- * next: the point where their kerb lines would meet, used as the control
- * point of a curve from one to the other.
- *
- * A Bézier rather than a fitted arc on purpose. A true fillet has to solve for
- * a tangent radius and has a family of degenerate cases — parallel lines,
- * reflex corners, a radius that will not fit — every one of which produces a
- * NaN that ends up in a vertex buffer. A quadratic through the mitre point is
- * always defined, always lands on both ends, and looks like a kerb radius.
- */
-function cornerPoints(from: Vec2, fromDir: Vec2, to: Vec2, toDir: Vec2): Vec2[] {
-  const denom = fromDir[0] * toDir[1] - fromDir[1] * toDir[0];
-  let control: Vec2;
-  if (Math.abs(denom) < 0.2) {
-    control = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
-  } else {
-    const dx = to[0] - from[0];
-    const dz = to[1] - from[1];
-    const s = (dx * toDir[1] - dz * toDir[0]) / denom;
-    // A corner behind the mouths is not a corner; fall back to the chord.
-    control = s > 0 && s < MAX_STOP_M
-      ? [from[0] + fromDir[0] * s, from[1] + fromDir[1] * s]
-      : [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
-  }
-
-  const out: Vec2[] = [];
-  for (let i = 1; i <= CORNER_SAMPLES; i++) {
-    const u = i / (CORNER_SAMPLES + 1);
-    const v = 1 - u;
-    out.push([
-      v * v * from[0] + 2 * u * v * control[0] + u * u * to[0],
-      v * v * from[1] + 2 * u * v * control[1] + u * u * to[1],
-    ]);
   }
   return out;
 }
@@ -634,15 +738,15 @@ const RING_STRIDE = 2 + CORNER_SAMPLES;
  * their own street's height; corner vertices ease from one to the next.
  */
 export function warpRing(shape: JunctionShape): void {
-  const n = shape.approaches.length;
+  const n = shape.ringApproaches.length;
   if (!n || shape.ring.length !== n * RING_STRIDE) {
     shape.ringY = shape.ring.map(() => shape.height);
     return;
   }
   const y = new Array<number>(shape.ring.length);
   for (let i = 0; i < n; i++) {
-    const here = shape.approaches[i].mouthY;
-    const next = shape.approaches[(i + 1) % n].mouthY;
+    const here = shape.ringApproaches[i].mouthY;
+    const next = shape.ringApproaches[(i + 1) % n].mouthY;
     const base = i * RING_STRIDE;
     y[base] = here;
     y[base + 1] = here;
@@ -667,6 +771,7 @@ export function junctionHeightAt(shape: JunctionShape, x: number, z: number): nu
 
   let bestDist = Infinity;
   let bestY = shape.height;
+  let bestEdge = 0;
   for (let i = 0; i < ring.length; i++) {
     const j = (i + 1) % ring.length;
     const ax = ring[i][0] - shape.x, az = ring[i][1] - shape.z;
@@ -692,7 +797,16 @@ export function junctionHeightAt(shape: JunctionShape, x: number, z: number): nu
     if (d < bestDist) {
       bestDist = d;
       bestY = ringY[i] + (ringY[j] - ringY[i]) * t;
+      bestEdge = i;
     }
   }
-  return bestY;
+
+  // Outside the ring, carry on at the gradient of the nearest street rather
+  // than flat. Which street: the one this stretch of boundary belongs to,
+  // which for a ring built approach by approach is the one its index falls in.
+  const approaches = shape.ringApproaches;
+  if (!approaches.length) return bestY;
+  const stride = 2 + CORNER_SAMPLES;
+  const owner = approaches[Math.min(approaches.length - 1, Math.floor(bestEdge / stride))];
+  return bestY + owner.mouthSlope * bestDist;
 }

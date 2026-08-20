@@ -231,7 +231,7 @@ export class RoadProfiles {
    * and the two disagree by however much the streets were climbing — measured
    * at 14 cm on a 1-in-3 hillside before this existed.
    */
-  pads(apron = 2.5): GroundPad[] {
+  pads(apron = 1.5): GroundPad[] {
     return this.nodes
       .filter((node) => node.ring.length >= 3)
       .map((node) => ({
@@ -329,6 +329,8 @@ export class RoadProfiles {
 const NODE_MERGE_M = 6;
 /** How far a street may be lifted or dropped to meet its junctions. */
 const MAX_LEVELLING_M = 0.9;
+/** How far past a junction mouth the street's gradient is measured. */
+const MOUTH_SLOPE_SPAN = 5;
 
 /**
  * Make every street that meets at a junction agree on the height there.
@@ -445,8 +447,16 @@ function levelToJunctions(roads: Road[], profiles: Map<string, number[]>): Junct
       const road = roads[a.road];
       // The mouth is `stop` metres out along the way, in whichever direction
       // this approach runs.
-      const h = sampleAt(road, a.at + a.sign * a.stop);
+      const mouthAt = a.at + a.sign * a.stop;
+      const h = sampleAt(road, mouthAt);
       a.mouthY = h ?? shape.height;
+      // The gradient the street leaves at, measured a few metres further out
+      // and capped: a street does not climb at more than one in six, and a
+      // profile that says it does is noise being extrapolated.
+      const beyond = sampleAt(road, mouthAt + a.sign * MOUTH_SLOPE_SPAN);
+      a.mouthSlope = beyond === null || h === null
+        ? 0
+        : Math.max(-0.17, Math.min(0.17, (beyond - h) / MOUTH_SLOPE_SPAN));
       if (counted.has(a.road) || road.bridge) continue;
       counted.add(a.road);
       const middle = sampleAt(road, a.at);
