@@ -38,6 +38,7 @@ import {
 } from '../world/junctions';
 import { asphaltTexture, groundTexture, pavingTexture } from './textures';
 import { MappedPaths } from '../world/sidewalks';
+import { GroundClaim } from './claims';
 import type { OcclusionField } from './occlusion';
 import type { StreetMask } from './streetmask';
 import {
@@ -557,16 +558,21 @@ function emitJunction(
   const [, earth] = stripColors('batter', cls, false);
 
   /**
-   * Which way is "outwards" from a stretch of the boundary.
+   * Which way is "outwards" at each vertex of the boundary, mitred.
    *
-   * Perpendicular to that stretch, not radial from the middle. Radial was the
-   * first attempt and it produces slivers: along the ends of a kerb fillet the
-   * boundary runs almost straight out from the centre, so a band offset along
-   * the radius is offset almost *along itself* and collapses into a spike.
-   * Those spikes are the torn grey shapes that were showing up in the corners
-   * of every junction.
+   * Three attempts, and the reasons both earlier ones failed are the reason
+   * this one is per *vertex*:
+   *
+   * - Radial from the middle collapses to a spike wherever the boundary runs
+   *   straight out from the centre, which it does at the ends of every kerb
+   *   fillet. Those spikes were the torn grey shapes in every junction corner.
+   * Mitring the offset at each vertex instead was tried and measured worse —
+   * a tight corner needs the mitre lengthened by the cosine of half its turn,
+   * and lengthening it pushes the band out over the approaching street. So:
+   * perpendicular to each stretch, and the small overlap where two stretches
+   * meet is left alone as the cheaper of two errors.
    */
-  const outwardOf = (a: Vec2, b: Vec2): Vec2 => {
+  const edgeNormal = (a: Vec2, b: Vec2): Vec2 => {
     const dx = b[0] - a[0];
     const dz = b[1] - a[1];
     const len = Math.hypot(dx, dz) || 1;
@@ -575,7 +581,6 @@ function emitJunction(
     const mz = (a[1] + b[1]) / 2 - shape.z;
     return n[0] * mx + n[1] * mz >= 0 ? n : [-n[0], -n[1]];
   };
-
   for (let i = 0; i < ring.length; i++) {
     if (shape.mouth[i]) continue;
     const j = (i + 1) % ring.length;
@@ -583,7 +588,7 @@ function emitJunction(
     const b = ring[j];
     const span = Math.hypot(b[0] - a[0], b[1] - a[1]);
     if (span < 0.05) continue;
-    const na = outwardOf(a, b);
+    const na = edgeNormal(a, b);
     const nb = na;
     const ya = ringY[i];
     const yb = ringY[j];
@@ -747,6 +752,7 @@ export function buildRoadMeshes(
   norm: StreetNorm,
   occlusion: OcclusionField | null = null,
   mask: StreetMask | null = null,
+  radius = 1200,
 ): RoadMeshes {
   const buckets: Record<Bucket, { pos: number[]; uv: number[]; col: number[] }> = {
     asphalt: { pos: [], uv: [], col: [] },
@@ -783,15 +789,29 @@ export function buildRoadMeshes(
     console.info(`[streets] ${mapped.count} mapped footways; streets defer to them`);
   }
 
-  // The junctions themselves, drawn once each as a single surface.
+  // Who owns which square metre. Decided before anything is drawn, because
+  // 15% of the length of every way in a real town has another way built over
+  // the same ground and nothing had ever chosen between them.
+  const claim = GroundClaim.build(
+    roads, norm, radius, profiles.junctions.map((j) => j.ring as Vec2[]));
+
+  // The junctions themselves, drawn once each as a single surface. Kept in
+  // their own meshes rather than merged into the streets', so a measurement
+  // can tell junction geometry from street geometry — which is the difference
+  // between knowing what overlaps what and guessing at it.
+  const junctionBuckets: Buckets = {
+    asphalt: { pos: [], uv: [], col: [] },
+    paving: { pos: [], uv: [], col: [] },
+    soil: { pos: [], uv: [], col: [] },
+  };
   for (const shape of profiles.junctions) {
-    emitJunction(shape, roads, norm, terrain, buckets, occlusion);
+    emitJunction(shape, roads, norm, terrain, junctionBuckets, occlusion);
   }
 
-  for (const road of roads) {
-    if (road.points.length < 2) continue;
+  roads.forEach((road, roadIndex) => {
+    if (road.points.length < 2) return;
     // Underpasses and metro lines are below the streets, not on them.
-    if (isUnderground(road)) continue;
+    if (isUnderground(road)) return;
 
     const rawProfile = profiles.get(road) ?? roadSurfaceProfile(road, terrain);
     const section = streetSection(road, norm);
@@ -882,6 +902,33 @@ export function buildRoadMeshes(
       const acrossIn = section[k - 1].offset;
       const acrossOut = edge.offset;
       const pavementHere = edge.surface === 'pavement' && pavedElsewhere !== null;
+
+      // This band, on this side, over ground somebody else owns is not drawn.
+      //
+      // Only the soft parts ask. A carriageway and its kerb are what the claim
+      // is protecting, so they never yield — asked to, a street gives up its
+      // own asphalt to a neighbour's verge and the town loses its roads.
+      // A bridge is exempt: it is not on the ground at all.
+      const yielded = (rail: Rail, prev: Rail): boolean[] | null => {
+        if (road.bridge) return null;
+        if (edge.surface === 'carriageway' || edge.surface === 'kerb') return null;
+        const out: boolean[] = [];
+        for (let i = 0; i < line.points.length - 1; i++) {
+          // Both edges of the band and its middle. Judging a band by its
+          // centre alone lets half of it lie on somebody else's ground, and
+          // half a band is exactly the size of the patches that were showing.
+          const mx = (prev.pts[i][0] + prev.pts[i + 1][0]) / 2;
+          const mz = (prev.pts[i][1] + prev.pts[i + 1][1]) / 2;
+          const ox = (rail.pts[i][0] + rail.pts[i + 1][0]) / 2;
+          const oz = (rail.pts[i][1] + rail.pts[i + 1][1]) / 2;
+          out.push(!claim.mayBuild(roadIndex, mx, mz)
+            || !claim.mayBuild(roadIndex, ox, oz)
+            || !claim.mayBuild(roadIndex, (mx + ox) / 2, (mz + oz) / 2));
+        }
+        return out;
+      };
+      const yieldRight = yielded(railRight, prevRight);
+      const yieldLeft = yielded(railLeft, prevLeft);
       const bands = pavementHere
         ? pavementBands(skip, pavedElsewhere)
         : { paving: skip, verge: null };
@@ -891,10 +938,10 @@ export function buildRoadMeshes(
       // left-hand side it is the outer one, and the colours swap with it.
       emitStrip(prevRight, railRight, inner, outer, soft, occlusion,
         bucket.pos, bucket.uv, bucket.col, uvScale, acrossIn, acrossOut,
-        bands.paving);
+        combine(bands.paving, yieldRight));
       emitStrip(railLeft, prevLeft, outer, inner, soft, occlusion,
         bucket.pos, bucket.uv, bucket.col, uvScale, acrossOut, acrossIn,
-        bands.paving);
+        combine(bands.paving, yieldLeft));
 
       // The same band again as verge, over the stretches the first call left
       // out: where the map already has a footway, this strip is grass.
@@ -908,10 +955,10 @@ export function buildRoadMeshes(
         const [vergeIn, vergeOut] = stripColors('verge', road.cls, false);
         emitStrip(prevRight, railRight, vergeIn, vergeOut, true, occlusion,
           buckets.soil.pos, buckets.soil.uv, buckets.soil.col,
-          UV_SCALE.verge, acrossIn, acrossOut, bands.verge);
+          UV_SCALE.verge, acrossIn, acrossOut, combine(bands.verge, yieldRight));
         emitStrip(railLeft, prevLeft, vergeOut, vergeIn, true, occlusion,
           buckets.soil.pos, buckets.soil.uv, buckets.soil.col,
-          UV_SCALE.verge, acrossOut, acrossIn, bands.verge);
+          UV_SCALE.verge, acrossOut, acrossIn, combine(bands.verge, yieldLeft));
       }
 
       // Close both ends of every stretch that was actually drawn. A vertical
@@ -919,12 +966,13 @@ export function buildRoadMeshes(
       // colour a third darker — the same trick the kerb face uses.
       const wall = shade(outer, 0.66);
       const taper = TAPERED_END.has(edge.surface);
-      for (const end of runEnds(line.points.length, skip)) {
-        const tangent = tangentAt(line.points, end);
-        emitEndFill(prevRight, railRight, end, tangent, terrain, taper,
-          wall, earthColor, bucket, buckets.soil);
-        emitEndFill(railLeft, prevLeft, end, tangent, terrain, taper,
-          wall, earthColor, bucket, buckets.soil);
+      for (const end of runEnds(line.points.length, combine(skip, yieldRight))) {
+        emitEndFill(prevRight, railRight, end, tangentAt(line.points, end), terrain,
+          taper, wall, earthColor, bucket, buckets.soil);
+      }
+      for (const end of runEnds(line.points.length, combine(skip, yieldLeft))) {
+        emitEndFill(railLeft, prevLeft, end, tangentAt(line.points, end), terrain,
+          taper, wall, earthColor, bucket, buckets.soil);
       }
 
       prevLeft = railLeft;
@@ -991,7 +1039,7 @@ export function buildRoadMeshes(
         markColor, markPos, markUv, markCol, spans.sides,
       );
     }
-  }
+  });
 
   const asphalt = asphaltTexture();
   const paving = pavingTexture();
@@ -1051,6 +1099,12 @@ export function buildRoadMeshes(
   add(buckets.asphalt.pos, buckets.asphalt.uv, buckets.asphalt.col, surfaceMat, 'roads:surface', true);
   add(buckets.paving.pos, buckets.paving.uv, buckets.paving.col, paveMat, 'roads:paving', true);
   add(buckets.soil.pos, buckets.soil.uv, buckets.soil.col, soilMat, 'roads:verge', true);
+  add(junctionBuckets.asphalt.pos, junctionBuckets.asphalt.uv, junctionBuckets.asphalt.col,
+    surfaceMat, 'junction:surface', true);
+  add(junctionBuckets.paving.pos, junctionBuckets.paving.uv, junctionBuckets.paving.col,
+    paveMat, 'junction:paving', true);
+  add(junctionBuckets.soil.pos, junctionBuckets.soil.uv, junctionBuckets.soil.col,
+    soilMat, 'junction:verge', true);
   add(markPos, markUv, markCol, markMat, 'roads:markings', false);
 
   return {

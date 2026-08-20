@@ -271,6 +271,7 @@ class App {
     const mask = new StreetMask(world.radius);
     this.roadMeshes = buildRoadMeshes(
       world.roads, world.terrain, profiles, world.norm, occlusion, mask,
+      world.radius,
     );
     mask.finish(grid.spacing);
     this.worldGroup.add(this.roadMeshes.group);
