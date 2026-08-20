@@ -30,6 +30,13 @@ new bites, and delete anything that stops being true.
   report.
 - **Report honestly.** If a fix is unverified, say so. If a diagnosis was
   wrong, correct it in one sentence and move on.
+- **They start a fresh chat often, on purpose** — their words: *"ты становишься
+  хуже по мере заполнения контекста. Поэтому чаты в claude код приходится
+  создавать новые."* That is a correct reading, and it makes this file and
+  `docs/` the only memory the project has. Anything a new chat would have to
+  be told twice belongs in here the first time. Anything the user should not
+  have to repeat — like which branch to push to — must be written as a
+  standing instruction, not as a question to ask again.
 - Replies to them are in **Russian**. Code, comments, commits and these docs
   are in **English**.
 - The long-term goal they described: a simulation dense with formulas backed
@@ -46,14 +53,34 @@ new bites, and delete anything that stops being true.
 - **No brands.** Shop and business names are discarded on import; only the
   category survives. A cafe is "a cafe".
 - **No real people.** Inhabitants are invented and statistical.
-- **Branch `claude/world-map-life-simulator-wthhom`.** Never push elsewhere
-  without explicit permission. Never open a PR unless asked.
-  **`.github/workflows/deploy.yml` watches this branch and only this branch.**
-  A session harness may name a different working branch; pushing there deploys
-  nothing, and the user reloads the site and sees the old build. That happened
-  once and cost an hour of work plus the user's trust. Before reporting that
-  anything is live: push to this branch, confirm the workflow run succeeded,
-  and quote the commit SHA the user should see in the top bar.
+- **One branch: `claude/world-map-life-simulator-wthhom`.** This is not a
+  preference to check, it is a standing instruction from the user: *"Мне нужно
+  чтобы я всегда работал с одной веткой. Мне так удобнее. У меня нет 2
+  параллельных билдов."* There is no `main` in this repository; this branch is
+  the project.
+
+  **`.github/workflows/deploy.yml` watches it and only it.** Web sessions do
+  not: the harness invents a fresh `claude/<slug>` branch per session and tells
+  you to work there. Pushing only there deploys nothing — the user reloads the
+  site and sees the old build. That has now happened twice.
+
+  So **every push goes to both places**, without asking:
+
+  ```
+  git push -u origin <the branch the harness named>
+  git push origin HEAD:claude/world-map-life-simulator-wthhom
+  ```
+
+  The second is a fast-forward as long as the session started from this branch,
+  which it does. If it is ever rejected, stop and ask rather than forcing.
+
+  Then **delete session branches whose commits are on the deploy branch**
+  (`git merge-base --is-ancestor` first, to be sure nothing is lost). They
+  accumulate one per chat otherwise, which is the thing the user objected to.
+
+  Never open a PR unless asked. Before reporting that anything is live: confirm
+  the workflow run for your SHA succeeded, and quote that SHA — it is in the
+  top bar, and a stale cache looks exactly like a fix that did not work.
 
 ## The rule that has saved the most time
 
