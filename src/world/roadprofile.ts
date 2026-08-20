@@ -10,10 +10,13 @@
  * Heights are metres above the loaded area's reference level.
  */
 
-import type { StreetCorridor, Terrain } from '../terrain/heightfield';
+import type { GroundPad, StreetCorridor, Terrain } from '../terrain/heightfield';
 import { smoothProfile } from '../terrain/heightfield';
 import { gradedHalfWidth, streetSection, type StreetNorm } from './street';
-import { findCrossings, type Crossing } from './junctions';
+import {
+  buildJunctions, inSpans, junctionHeightAt, spanCuts, spansFor,
+  spansFromJunctions, splitAt, warpRing, type JunctionShape,
+} from './junctions';
 import type { Road, Vec2 } from './types';
 
 /** Height above ground per OSM layer, so stacked structures clear each other. */
@@ -202,8 +205,8 @@ export function isUnderground(way: { tunnel: boolean; layer: number }): boolean 
  */
 export class RoadProfiles {
   private readonly byId = new Map<string, number[]>();
-  /** Where streets meet, and the one height they all meet at. */
-  private readonly nodes: JunctionNode[] = [];
+  /** Where streets meet: one height, one boundary, every approach on it. */
+  private readonly nodes: JunctionShape[] = [];
 
   constructor(roads: Road[], terrain: Terrain) {
     for (const road of roads) {
@@ -213,9 +216,40 @@ export class RoadProfiles {
     this.nodes = levelToJunctions(roads, this.byId);
   }
 
-  /** The junction nodes, for anything that needs to know where they are. */
-  get junctions(): readonly JunctionNode[] {
+  /** The junctions, for anything that needs to know where they are. */
+  get junctions(): readonly JunctionShape[] {
     return this.nodes;
+  }
+
+  /**
+   * The junctions' claim on the earth: flat, inside their own boundary.
+   *
+   * Separate from `corridors` and applied after them, because a junction is a
+   * polygon rather than a ribbon and because at a crossing it is the junction
+   * that gets drawn. Without this the earth under a crossing keeps following
+   * each street's own gradient while the crossing is drawn flat on top of it,
+   * and the two disagree by however much the streets were climbing — measured
+   * at 14 cm on a 1-in-3 hillside before this existed.
+   */
+  pads(apron = 2.5): GroundPad[] {
+    return this.nodes
+      .filter((node) => node.ring.length >= 3)
+      .map((node) => ({
+        // Graded a little wider than it is drawn. A mesh cell straddling the
+        // drawn boundary would otherwise have one corner on the junction and
+        // one on a street climbing away from it, and the plane between them
+        // rises through the asphalt. Widening the flat part costs an apron of
+        // a couple of metres, which is what a junction has anyway.
+        ring: node.ring.map(([x, z]) => {
+          const dx = x - node.x;
+          const dz = z - node.z;
+          const len = Math.hypot(dx, dz) || 1;
+          return [x + (dx / len) * apron, z + (dz / len) * apron] as [number, number];
+        }),
+        heightAt: (x: number, z: number) => junctionHeightAt(node, x, z),
+        depth: STRUCTURE_DEPTH,
+        blend: 3,
+      }));
   }
 
   /** Surface height at every point of a way, or null if it was not indexed. */
@@ -233,61 +267,62 @@ export class RoadProfiles {
    */
   corridors(roads: Road[], norm: StreetNorm): StreetCorridor[] {
     const out: StreetCorridor[] = [];
+    // A street cuts the earth over exactly the stretches where it is drawn,
+    // and stops where the junction begins — the same spans the renderer uses.
+    //
+    // It used to cut the whole way through, junctions included, so at every
+    // crossing two corridors claimed the same earth at two different levels
+    // and the stronger claim won. That is where "прямоугольные плато криво
+    // друг на друге" came from, and no amount of drawing the junction properly
+    // fixes it while the earth underneath is still being fought over.
+    const spans = spansFromJunctions(roads, this.nodes);
+
     for (const road of roads) {
       if (road.bridge || isUnderground(road)) continue;
       const levels = this.byId.get(road.id);
       if (!levels) continue;
       const section = streetSection(road, norm);
-      out.push({
-        points: road.points,
-        halfWidth: gradedHalfWidth(section),
-        blend: Math.max(1.5, norm.batter),
-        levels,
-        depth: STRUCTURE_DEPTH,
+      const shape = section
         // The embankment edge is deliberately dropped: its height is whatever
         // the untouched ground turns out to be, which is the question grading
         // is answering, not an input to it.
-        shape: section
-          .filter((e) => !Number.isNaN(e.dy))
-          .map((e) => [e.offset, e.dy] as [number, number]),
-      });
+        .filter((e) => !Number.isNaN(e.dy))
+        .map((e) => [e.offset, e.dy] as [number, number]);
+      const claim = {
+        halfWidth: gradedHalfWidth(section),
+        blend: Math.max(1.5, norm.batter),
+        depth: STRUCTURE_DEPTH,
+        shape,
+      };
+
+      const mine = spansFor(spans, road);
+      if (!mine.sides.length) {
+        out.push({ ...claim, points: road.points, levels });
+        continue;
+      }
+
+      const line = splitAt(road.points, levels, spanCuts(mine));
+      let run: { points: Vec2[]; levels: number[] } | null = null;
+      for (let i = 0; i < line.points.length - 1; i++) {
+        const mid = (line.distances[i] + line.distances[i + 1]) / 2;
+        if (inSpans(mine.sides, mid)) {
+          if (run && run.points.length > 1) out.push({ ...claim, ...run });
+          run = null;
+          continue;
+        }
+        if (!run) run = { points: [line.points[i]], levels: [line.heights[i]] };
+        run.points.push(line.points[i + 1]);
+        run.levels.push(line.heights[i + 1]);
+      }
+      if (run && run.points.length > 1) out.push({ ...claim, ...run });
     }
     // Where two corridors claim the same ground equally hard — a crossroads —
     // the first claim is the one that stands, so the bigger road goes first
     // and carries the side street across it rather than being dug through.
     out.sort((a, b) => b.halfWidth - a.halfWidth);
 
-    // A pad under every junction, flat and at the junction's own height.
-    //
-    // Without one, the ground at a crossroads is whatever the two corridors
-    // last wrote there, and the paving that ties each corridor down to the
-    // earth is exactly the paving that stops at a junction. The result is a
-    // corridor edge hanging a third of a metre over the ground with nothing
-    // under it — strips floating in the air, which is what they looked like.
-    // The pad puts the earth at street level across the whole junction, so
-    // there is nothing left to hang over.
-    for (const node of this.nodes) {
-      const level = [node.height, node.height];
-      out.push({
-        points: [[node.x - 0.1, node.z], [node.x + 0.1, node.z]],
-        halfWidth: node.radius,
-        blend: 3,
-        levels: level,
-        depth: STRUCTURE_DEPTH,
-        shape: [[0, 0]],
-      });
-    }
     return out;
   }
-}
-
-/** A place where streets meet, and the height they all agree on there. */
-export interface JunctionNode {
-  x: number;
-  z: number;
-  height: number;
-  /** How far the flat pad reaches — the widest street that meets here. */
-  radius: number;
 }
 
 /** How far apart two crossings may be and still be the same junction. */
@@ -310,23 +345,10 @@ const MAX_LEVELLING_M = 0.9;
  * nothing kinks; and it is capped, so a junction can never drag a street
  * somewhere the terrain will not carry it.
  */
-function levelToJunctions(roads: Road[], profiles: Map<string, number[]>): JunctionNode[] {
-  const crossings = findCrossings(roads);
-  if (!crossings.length) return [];
+function levelToJunctions(roads: Road[], profiles: Map<string, number[]>): JunctionShape[] {
+  const shapes = buildJunctions(roads, undefined, NODE_MERGE_M);
+  if (!shapes.length) return [];
 
-  // Cluster crossings by position: several ways meeting at one place produce
-  // one crossing per pair, and they are all the same junction.
-  const cellOf = (x: number, z: number) =>
-    `${Math.round(x / NODE_MERGE_M)},${Math.round(z / NODE_MERGE_M)}`;
-  const clusters = new Map<string, Crossing[]>();
-  for (const c of crossings) {
-    const key = cellOf(c.x, c.z);
-    let bucket = clusters.get(key);
-    if (!bucket) clusters.set(key, (bucket = []));
-    bucket.push(c);
-  }
-
-  const nodes: JunctionNode[] = [];
   /** Per road: the height it must have at a distance along it. */
   const targets = new Map<number, Array<{ at: number; height: number }>>();
 
@@ -348,42 +370,37 @@ function levelToJunctions(roads: Road[], profiles: Map<string, number[]>): Junct
     return profile[profile.length - 1];
   };
 
-  for (const bucket of clusters.values()) {
-    const members = new Map<number, number>();   // road index -> distance along
-    let sx = 0, sz = 0, radius = 0;
-    for (const c of bucket) {
-      members.set(c.roadA, c.atA);
-      members.set(c.roadB, c.atB);
-      sx += c.x;
-      sz += c.z;
-    }
-    const n = bucket.length;
-
+  const levelled: JunctionShape[] = [];
+  for (const shape of shapes) {
     let sum = 0;
     let count = 0;
-    for (const [roadIndex, at] of members) {
-      const road = roads[roadIndex];
+    const counted = new Set<number>();
+    for (const a of shape.approaches) {
+      // Two approaches per way through a junction; the way has one height here.
+      if (counted.has(a.road)) continue;
+      counted.add(a.road);
+      const road = roads[a.road];
       // A bridge deck is an arch tied to its abutments; it does not get bent
       // to suit a road passing underneath it.
       if (road.bridge) continue;
-      const h = sampleAt(road, at);
+      const h = sampleAt(road, a.at);
       if (h === null) continue;
       // Weighted by width: a main road decides the level of the crossing and
       // the side street comes to meet it, not the other way about.
       sum += h * road.width;
       count += road.width;
-      radius = Math.max(radius, road.width / 2 + 4);
     }
     if (count === 0) continue;
 
-    const height = sum / count;
-    nodes.push({ x: sx / n, z: sz / n, height, radius });
+    shape.height = sum / count;
+    levelled.push(shape);
 
-    for (const [roadIndex, at] of members) {
-      if (roads[roadIndex].bridge) continue;
-      let list = targets.get(roadIndex);
-      if (!list) targets.set(roadIndex, (list = []));
-      list.push({ at, height });
+    for (const road of counted) {
+      if (roads[road].bridge) continue;
+      const at = shape.approaches.find((a) => a.road === road)!.at;
+      let list = targets.get(road);
+      if (!list) targets.set(road, (list = []));
+      list.push({ at, height: shape.height });
     }
   }
 
@@ -416,7 +433,32 @@ function levelToJunctions(roads: Road[], profiles: Map<string, number[]>): Junct
     }
   }
 
-  return nodes;
+  // Levelling moved the ways, so both the height each junction agreed on and
+  // the heights its streets arrive at have moved with them. Re-reading them
+  // costs nothing and is what keeps the surface that gets drawn at exactly the
+  // height the streets now reach it at.
+  for (const shape of levelled) {
+    let sum = 0;
+    let count = 0;
+    const counted = new Set<number>();
+    for (const a of shape.approaches) {
+      const road = roads[a.road];
+      // The mouth is `stop` metres out along the way, in whichever direction
+      // this approach runs.
+      const h = sampleAt(road, a.at + a.sign * a.stop);
+      a.mouthY = h ?? shape.height;
+      if (counted.has(a.road) || road.bridge) continue;
+      counted.add(a.road);
+      const middle = sampleAt(road, a.at);
+      if (middle === null) continue;
+      sum += middle * road.width;
+      count += road.width;
+    }
+    if (count > 0) shape.height = sum / count;
+    warpRing(shape);
+  }
+
+  return levelled;
 }
 
 /** The correction at a distance along a way: interpolated, flat past the ends. */

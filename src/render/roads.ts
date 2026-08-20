@@ -32,7 +32,10 @@ import {
 import {
   gradedHalfWidth, streetSection, type StreetEdge, type StreetNorm, type StreetSurface,
 } from '../world/street';
-import { inSpans, junctionSpans, spanCuts, spansFor, splitAt } from '../world/junctions';
+import {
+  inSpans, spanCuts, spansFor, spansFromJunctions, splitAt,
+  type JunctionShape,
+} from '../world/junctions';
 import { asphaltTexture, groundTexture, pavingTexture } from './textures';
 import type { OcclusionField } from './occlusion';
 import type { StreetMask } from './streetmask';
@@ -259,6 +262,386 @@ function emitStrip(
 
 const STRIP_TINT = new THREE.Color();
 
+/**
+ * How far below the ground a cut end is carried before it stops.
+ *
+ * The wall only has to reach the earth; going further costs six triangles and
+ * buys immunity. The earth under a street is graded, but a junction pad, a
+ * neighbouring street's shoulder or a carved riverbank can all put it lower
+ * than this end expected, and a wall that stops short is a hole you can see
+ * the sky through. Buried surplus is invisible; missing surplus is a bug.
+ */
+const SKIRT_DEPTH_M = 0.6;
+
+/**
+ * Slope of the wedge that brings the earth up to a cut end, as run over rise.
+ *
+ * Three to one. The point is not the exact number, it is that there is a
+ * number at all: a pavement that stops dead, drops 20 cm at a right angle and
+ * then becomes grass is the single thing that reads most loudly as "this was
+ * generated". Earth does not do that. It banks up to whatever it meets.
+ */
+const END_BATTER_RUN = 3;
+const END_BATTER_MIN_M = 0.6;
+const END_BATTER_MAX_M = 4;
+
+/**
+ * Which surfaces get the wedge, and which are allowed to stop dead.
+ *
+ * A kerb is a vertical stone and a carriageway edge is a made edge — both may
+ * end square, and the carriageway *must*, because a wedge at the mouth of a
+ * junction is a 12 cm dip you drive into. Everything that is earth, or that
+ * earth has to meet, gets the slope.
+ */
+const TAPERED_END: ReadonlySet<StreetSurface> = new Set<StreetSurface>([
+  'verge', 'pavement', 'batter',
+]);
+
+/** One end of one drawn run: which vertex, and which way is "outwards". */
+interface RunEnd {
+  at: number;
+  /** +1 when the road lies behind this vertex, -1 when it lies ahead. */
+  out: number;
+}
+
+/**
+ * Close the end of a strip so the world does not show through it.
+ *
+ * A street is a surface swept along a line — a roof over the ground, tied down
+ * at both sides by its embankment. Along its length it was tied down nowhere:
+ * where the sweep stopped, at a junction or at the end of a way, the roof
+ * ended and left its whole cross-section open. From a low angle that is a
+ * ledge with daylight under it.
+ *
+ * Two pieces, and which you get depends on what is ending. `TAPERED_END`
+ * surfaces get a wedge of earth banking up to them, then a wall from the foot
+ * of that wedge down under the ground. Everything else gets the wall alone.
+ * The wall is what makes this safe rather than merely tidy: it is emitted
+ * unconditionally, including at the thousands of places where one OSM way
+ * simply continues into the next, because there it lands inside the next way's
+ * structure and is never seen. Deciding which ends are "real" would need the
+ * whole connectivity graph and would be wrong the first time a way was tagged
+ * oddly. A buried wall costs nothing and cannot be wrong.
+ *
+ * Both facings are emitted. The geometry is unindexed, so every triangle keeps
+ * its own normal and neither side comes out black — and a face that turns out
+ * to be visible from the side nobody predicted is exactly the failure this
+ * exists to prevent.
+ */
+function emitEndFill(
+  inner: Rail,
+  outer: Rail,
+  end: RunEnd,
+  tangent: Vec2,
+  terrain: Terrain,
+  taper: boolean,
+  faceColor: THREE.Color,
+  earthColor: THREE.Color,
+  face: { pos: number[]; uv: number[]; col: number[] },
+  earth: { pos: number[]; uv: number[]; col: number[] },
+): void {
+  const { at } = end;
+  if (at < 0 || at >= inner.pts.length || at >= outer.pts.length) return;
+
+  let p0 = inner.pts[at];
+  let p1 = outer.pts[at];
+  let y0 = inner.y[at];
+  let y1 = outer.y[at];
+  const across = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+  if (across < 1e-6) return;
+
+  if (taper) {
+    // How far the earth has to climb to reach this edge decides how far back
+    // it starts climbing, so a kerb-height lip gets a short wedge and a road
+    // on an embankment gets a long one.
+    const drop = Math.max(
+      y0 - terrain.heightAt(p0[0], p0[1]),
+      y1 - terrain.heightAt(p1[0], p1[1]),
+    );
+    const run = Math.min(END_BATTER_MAX_M,
+      Math.max(END_BATTER_MIN_M, Math.max(0, drop) * END_BATTER_RUN));
+    const ox = tangent[0] * end.out * run;
+    const oz = tangent[1] * end.out * run;
+
+    const q0: Vec2 = [p0[0] + ox, p0[1] + oz];
+    const q1: Vec2 = [p1[0] + ox, p1[1] + oz];
+    const g0 = terrain.heightAt(q0[0], q0[1]);
+    const g1 = terrain.heightAt(q1[0], q1[1]);
+
+    quadBothWays(
+      [p0[0], y0, p0[1]], [p1[0], y1, p1[1]],
+      [q1[0], Math.min(g1, y1), q1[1]], [q0[0], Math.min(g0, y0), q0[1]],
+      across, run, earthColor, earth, true,
+    );
+
+    // The wedge lands on the ground it was measured against; the wall below
+    // carries on from there in case that ground is not where it was measured.
+    p0 = q0; p1 = q1;
+    y0 = Math.min(g0, y0); y1 = Math.min(g1, y1);
+  }
+
+  const foot = Math.min(
+    terrain.heightAt(p0[0], p0[1]), terrain.heightAt(p1[0], p1[1]), y0, y1,
+  ) - SKIRT_DEPTH_M;
+
+  quadBothWays(
+    [p0[0], y0, p0[1]], [p1[0], y1, p1[1]],
+    [p1[0], foot, p1[1]], [p0[0], foot, p0[1]],
+    across, Math.max(y0, y1) - foot, faceColor, face, false,
+  );
+}
+
+/**
+ * A quad emitted with both facings, so no end fill can ever be the invisible
+ * side of a triangle. Winding here is not worth being clever about: this is
+ * geometry nobody should notice, and the failure mode of getting it wrong is
+ * a hole in the world.
+ */
+function quadBothWays(
+  a: number[], b: number[], c: number[], d: number[],
+  uSpan: number, vSpan: number,
+  color: THREE.Color, out: { pos: number[]; uv: number[]; col: number[] },
+  soft: boolean,
+): void {
+  const corners = [a, b, c, d];
+  const uvs = [[0, 0], [uSpan, 0], [uSpan, vSpan], [0, vSpan]];
+  const push = (i: number) => {
+    const v = corners[i];
+    out.pos.push(v[0], v[1], v[2]);
+    out.uv.push(uvs[i][0], uvs[i][1]);
+    STRIP_TINT.copy(color);
+    if (soft) tintGround(STRIP_TINT, v[0], v[2], 0.25);
+    else tintHard(STRIP_TINT, v[0], v[2], 0.3);
+    out.col.push(STRIP_TINT.r, STRIP_TINT.g, STRIP_TINT.b);
+  };
+  for (const i of [0, 1, 2, 0, 2, 3]) push(i);
+  for (const i of [0, 2, 1, 0, 3, 2]) push(i);
+}
+
+/** Which way the way runs at a run end, as a unit vector along the centreline. */
+function tangentAt(points: Vec2[], end: RunEnd): Vec2 {
+  const i = end.out > 0 ? end.at - 1 : end.at;
+  const a = points[Math.max(0, Math.min(points.length - 2, i))];
+  const b = points[Math.max(1, Math.min(points.length - 1, i + 1))];
+  const dx = b[0] - a[0];
+  const dz = b[1] - a[1];
+  const len = Math.hypot(dx, dz) || 1;
+  return [dx / len, dz / len];
+}
+
+/**
+ * The stations where a drawn run begins or ends.
+ *
+ * `skip` marks segments, not vertices, so a run of drawn segments [i0..i1]
+ * needs closing at vertex i0 and at vertex i1 + 1. With no interruptions at
+ * all that is simply the two ends of the way.
+ */
+function runEnds(vertices: number, skip: boolean[] | null): RunEnd[] {
+  const out: RunEnd[] = [];
+  const segments = vertices - 1;
+  if (segments < 1) return out;
+  for (let i = 0; i < segments; i++) {
+    if (skip?.[i]) continue;
+    // The road runs forward from here, so outwards is backwards.
+    if (i === 0 || skip?.[i - 1]) out.push({ at: i, out: -1 });
+    if (i === segments - 1 || skip?.[i + 1]) out.push({ at: i + 1, out: 1 });
+  }
+  return out;
+}
+
+type Buckets = Record<Bucket, { pos: number[]; uv: number[]; col: number[] }>;
+
+/**
+ * Draw a junction as one surface.
+ *
+ * The roadway is the ring, filled at the single height every street here
+ * agreed on. Round the outside of it, on every stretch of boundary that is not
+ * the mouth of a street, runs the same cross-section a street has: a kerb
+ * standing proud of the asphalt, its flat top, a pavement behind it, and then
+ * earth banking up to meet all of that. Which is why a crossing now reads as
+ * one place rather than as two roads that happen to overlap — the corners are
+ * built, not left as whatever the ground happened to be doing.
+ *
+ * Nothing here intersects anything with anything. Every point is constructed
+ * from a direction and a width, which is the only way this survives real map
+ * data: three streets meeting at four degrees, a way that doubles back on
+ * itself, two nodes a centimetre apart.
+ */
+function emitJunction(
+  shape: JunctionShape,
+  roads: Road[],
+  norm: StreetNorm,
+  terrain: Terrain,
+  buckets: Buckets,
+  occlusion: OcclusionField | null,
+): void {
+  const ring = shape.ring;
+  if (ring.length < 3) return;
+
+  // The widest street decides how the junction is finished, the same way it
+  // decides the height: a crossroads of a main road and a lane gets the main
+  // road's pavement round it.
+  let cls: RoadClass = 'residential';
+  let widest = -1;
+  for (const a of shape.approaches) {
+    if (a.half > widest) {
+      widest = a.half;
+      cls = roads[a.road].cls;
+    }
+  }
+
+  const reveal = norm.kerbReveal;
+  const pave = norm.pavement[cls];
+  // Every vertex of the ring has its own height: the mouths sit where their
+  // streets actually arrive, the corners ease between them, and the middle is
+  // the level they were all levelled to. A flat junction meets a street
+  // climbing away from it in a step the size of that climb.
+  const ringY = shape.ringY.length === ring.length
+    ? shape.ringY : ring.map(() => shape.height);
+
+  // --- the roadway ---------------------------------------------------------
+  const [crownColor, edgeColor] = stripColors('carriageway', cls, false);
+  const asphalt = buckets.asphalt;
+  const uvScale = UV_SCALE.carriageway;
+  for (let i = 0; i < ring.length; i++) {
+    const j = (i + 1) % ring.length;
+    const a = ring[i];
+    const b = ring[j];
+    emitFace(
+      [[shape.x, shape.height, shape.z], [a[0], ringY[i], a[1]], [b[0], ringY[j], b[1]]],
+      [crownColor, edgeColor, edgeColor],
+      false, occlusion, asphalt, uvScale,
+    );
+  }
+
+  // --- kerb, pavement and the earth behind them ---------------------------
+  const [kerbFaceIn, kerbFaceOut] = stripColors('kerb', cls, true);
+  const [kerbTopIn, kerbTopOut] = stripColors('kerb', cls, false);
+  const [paveIn, paveOut] = stripColors('pavement', cls, false);
+  const [, earth] = stripColors('batter', cls, false);
+
+  const normalAt = (p: Vec2): Vec2 => {
+    const dx = p[0] - shape.x;
+    const dz = p[1] - shape.z;
+    const len = Math.hypot(dx, dz) || 1;
+    return [dx / len, dz / len];
+  };
+
+  for (let i = 0; i < ring.length; i++) {
+    if (shape.mouth[i]) continue;
+    const j = (i + 1) % ring.length;
+    const a = ring[i];
+    const b = ring[j];
+    const na = normalAt(a);
+    const nb = normalAt(b);
+    const span = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (span < 1e-4) continue;
+    const ya = ringY[i];
+    const yb = ringY[j];
+    const kerbA = ya + reveal;
+    const kerbB = yb + reveal;
+
+    const at = (p: Vec2, n: Vec2, off: number, h: number): number[] =>
+      [p[0] + n[0] * off, h, p[1] + n[1] * off];
+
+    // The kerb face, standing out of the asphalt. Both facings: it is a thin
+    // wall and which side you see it from depends on the corner's curvature.
+    emitQuad(at(a, na, 0, ya), at(b, nb, 0, yb),
+      at(b, nb, 0, kerbB), at(a, na, 0, kerbA),
+      kerbFaceIn, kerbFaceOut, false, occlusion, buckets.paving,
+      span, reveal, true);
+
+    // Its top, then the pavement behind it.
+    emitQuad(at(a, na, 0, kerbA), at(b, nb, 0, kerbB),
+      at(b, nb, norm.kerbWidth, kerbB), at(a, na, norm.kerbWidth, kerbA),
+      kerbTopIn, kerbTopOut, false, occlusion, buckets.paving,
+      span, norm.kerbWidth, false);
+
+    let back = norm.kerbWidth;
+    if (pave > 0) {
+      emitQuad(at(a, na, back, kerbA), at(b, nb, back, kerbB),
+        at(b, nb, back + pave, kerbB), at(a, na, back + pave, kerbA),
+        paveIn, paveOut, false, occlusion, buckets.paving,
+        span, pave, false);
+      back += pave;
+    }
+
+    // Earth banking up to the back of it, so the corner never ends in a step.
+    const outerA = at(a, na, back, kerbA);
+    const outerB = at(b, nb, back, kerbB);
+    const runA = at(a, na, back + norm.batter, kerbA);
+    const runB = at(b, nb, back + norm.batter, kerbB);
+    runA[1] = Math.min(kerbA, terrain.heightAt(runA[0], runA[2]));
+    runB[1] = Math.min(kerbB, terrain.heightAt(runB[0], runB[2]));
+    emitQuad(outerA, outerB, runB, runA, earth, earth, true, occlusion,
+      buckets.soil, span, norm.batter, false);
+
+    // And a wall under that, for the same reason every other end has one.
+    const footA = [runA[0], runA[1] - SKIRT_DEPTH_M, runA[2]];
+    const footB = [runB[0], runB[1] - SKIRT_DEPTH_M, runB[2]];
+    emitQuad(runA, runB, footB, footA, earth, earth, true, occlusion,
+      buckets.soil, span, SKIRT_DEPTH_M, true);
+  }
+}
+
+/** One triangle, wound so it faces up, with a colour per corner. */
+function emitFace(
+  p: number[][],
+  colors: THREE.Color[],
+  soft: boolean,
+  occlusion: OcclusionField | null,
+  out: { pos: number[]; uv: number[]; col: number[] },
+  uvScale: number,
+): void {
+  const up = (p[1][0] - p[0][0]) * (p[2][2] - p[0][2])
+    - (p[2][0] - p[0][0]) * (p[1][2] - p[0][2]);
+  const order = up < 0 ? [0, 1, 2] : [0, 2, 1];
+  for (const i of order) {
+    const v = p[i];
+    out.pos.push(v[0], v[1], v[2]);
+    out.uv.push(v[0] / uvScale, v[2] / uvScale);
+    STRIP_TINT.copy(colors[i]);
+    const ao = occlusion?.at(v[0], v[2]) ?? 0;
+    if (soft) tintGround(STRIP_TINT, v[0], v[2], ao);
+    else tintHard(STRIP_TINT, v[0], v[2], ao);
+    out.col.push(STRIP_TINT.r, STRIP_TINT.g, STRIP_TINT.b);
+  }
+}
+
+/** A quad a→b→c→d, up-facing unless it is a wall, in which case both ways. */
+function emitQuad(
+  a: number[], b: number[], c: number[], d: number[],
+  colorNear: THREE.Color, colorFar: THREE.Color,
+  soft: boolean,
+  occlusion: OcclusionField | null,
+  out: { pos: number[]; uv: number[]; col: number[] },
+  uSpan: number, vSpan: number,
+  bothWays: boolean,
+): void {
+  const corners = [a, b, c, d];
+  const colors = [colorNear, colorNear, colorFar, colorFar];
+  const uvs = [[0, 0], [uSpan, 0], [uSpan, vSpan], [0, vSpan]];
+  const push = (i: number) => {
+    const v = corners[i];
+    out.pos.push(v[0], v[1], v[2]);
+    out.uv.push(uvs[i][0], uvs[i][1]);
+    STRIP_TINT.copy(colors[i]);
+    const ao = occlusion?.at(v[0], v[2]) ?? 0;
+    if (soft) tintGround(STRIP_TINT, v[0], v[2], ao);
+    else tintHard(STRIP_TINT, v[0], v[2], ao);
+    out.col.push(STRIP_TINT.r, STRIP_TINT.g, STRIP_TINT.b);
+  };
+
+  if (bothWays) {
+    for (const i of [0, 1, 2, 0, 2, 3]) push(i);
+    for (const i of [0, 2, 1, 0, 3, 2]) push(i);
+    return;
+  }
+  const up = (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
+  const order = up < 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2];
+  for (const i of order) push(i);
+}
+
 /** Which merged mesh a surface belongs to. Three materials cover the street. */
 type Bucket = 'asphalt' | 'paving' | 'soil';
 
@@ -339,7 +722,15 @@ export function buildRoadMeshes(
 
   // Where streets cross, the paving has to stop; without this the verge runs
   // straight over the main road and the city grows grass across its junctions.
-  const junctions = junctionSpans(roads);
+  // The spans come from the junction shapes themselves, so a street stops
+  // exactly on the boundary of the thing that is drawn there — not a metre or
+  // two away from it, which is a gap you can see through.
+  const junctions = spansFromJunctions(roads, profiles.junctions);
+
+  // The junctions themselves, drawn once each as a single surface.
+  for (const shape of profiles.junctions) {
+    emitJunction(shape, roads, norm, terrain, buckets, occlusion);
+  }
 
   for (const road of roads) {
     if (road.points.length < 2) continue;
@@ -383,6 +774,10 @@ export function buildRoadMeshes(
       }
     }
 
+    // The wedge that brings earth up to a cut end is earth, so it is coloured
+    // and bucketed as the embankment is rather than as the slab it meets.
+    const [, earthColor] = stripColors('batter', road.cls, false);
+
     // Every edge of the section, swept. Offset 0 is the crown, shared by both
     // sides, so it is built once and both halves grow outwards from it.
     const crown: Rail = { pts: line.points, y: profile.map((h) => h + section[0].dy) };
@@ -425,6 +820,19 @@ export function buildRoadMeshes(
         bucket.pos, bucket.uv, bucket.col, uvScale, acrossIn, acrossOut, skip);
       emitStrip(railLeft, prevLeft, outer, inner, soft, occlusion,
         bucket.pos, bucket.uv, bucket.col, uvScale, acrossOut, acrossIn, skip);
+
+      // Close both ends of every stretch that was actually drawn. A vertical
+      // face has no place in the palette of its own, so it takes the band's
+      // colour a third darker — the same trick the kerb face uses.
+      const wall = shade(outer, 0.66);
+      const taper = TAPERED_END.has(edge.surface);
+      for (const end of runEnds(line.points.length, skip)) {
+        const tangent = tangentAt(line.points, end);
+        emitEndFill(prevRight, railRight, end, tangent, terrain, taper,
+          wall, earthColor, bucket, buckets.soil);
+        emitEndFill(railLeft, prevLeft, end, tangent, terrain, taper,
+          wall, earthColor, bucket, buckets.soil);
+      }
 
       prevLeft = railLeft;
       prevRight = railRight;

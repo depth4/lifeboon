@@ -239,6 +239,10 @@ class App {
     // will draw the ground, so the mesh is asked how wide its cells are.
     const grid = groundGrid(world.radius, world.terrain.resolution);
     world.terrain.gradeStreets(corridors, shoulderFor(grid.spacing));
+    // Then the junctions, which override the streets inside their own
+    // boundary: at a crossing it is the crossing that gets drawn, so it is the
+    // crossing that decides the earth under it.
+    world.terrain.gradePads(profiles.pads());
 
     // Where the buildings shut the ground in. Every surface that meets the
     // earth is shaded with this, which is what makes a wall look like it is

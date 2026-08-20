@@ -14,6 +14,7 @@
  */
 
 import { fbm } from '../core/noise';
+import type { Vec2 } from '../world/types';
 
 export interface Terrain {
   /** Ground height at a projected point, in metres. */
@@ -36,6 +37,38 @@ export interface Terrain {
    * Flat ground has nothing to grade and answers false.
    */
   gradeStreets(corridors: StreetCorridor[], shoulder?: number): boolean;
+  /**
+   * Flatten the ground under each junction to the one height every street
+   * there agreed on. See `Heightfield.gradePads`.
+   */
+  gradePads(pads: GroundPad[]): boolean;
+}
+
+/**
+ * A junction's claim on the earth: a polygon, flat, at one height.
+ *
+ * A street is a ribbon and can be described by a centreline and a width. A
+ * junction cannot — it is a place, with a boundary, and the difference matters
+ * as soon as it is drawn. It used to be graded as a disc of the widest
+ * street's radius, which flattened ground well outside the crossing in some
+ * directions and not far enough in others; and because the disc was applied
+ * after the streets and lost every tie to them, the earth under a crossing
+ * still followed each street's own gradient. Drawn flat and graded sloping,
+ * the two disagreed by up to 14 cm — measured, in `tests/ground.ts`.
+ */
+export interface GroundPad {
+  /** The junction boundary, in world metres. */
+  ring: Vec2[];
+  /**
+   * The finished surface inside it, which is not flat: a junction is levelled
+   * at its middle and each street climbs away from there at its own gradient,
+   * so the mouths sit at their own heights and the surface warps between them.
+   */
+  heightAt(x: number, z: number): number;
+  /** How far below that the earth is cut, as for a street. */
+  depth: number;
+  /** How far outside the ring the correction fades to nothing. */
+  blend: number;
 }
 
 /**
@@ -110,6 +143,10 @@ export class FlatTerrain implements Terrain {
   }
 
   gradeStreets(): boolean {
+    return false;
+  }
+
+  gradePads(): boolean {
     return false;
   }
 }
@@ -609,6 +646,77 @@ export class Heightfield implements Terrain {
     return Math.max(4, this.resolution * 1.6);
   }
 
+  /**
+   * Flatten the earth under each junction to the height drawn there.
+   *
+   * Applied after the streets and overriding them, because at a crossing the
+   * junction is the thing that is drawn and the streets are the things that
+   * stop at it. Outside the ring the correction eases off across `blend`.
+   *
+   * Deliberately *not* capping the earth beyond the ring the way a street's
+   * shoulder does. A street's neighbours are level with it; a junction's are
+   * climbing away from it at their own gradient, and holding them down to the
+   * junction's level for a shoulder's width dug a trench under every approach
+   * — measured at 58 cm on a 1-in-3 hillside. The straddling cell is dealt
+   * with by grading a slightly larger ring than the one that gets drawn, which
+   * `RoadProfiles.pads` does; here the rule is simply "inside is flat, outside
+   * eases off".
+   */
+  gradePads(pads: GroundPad[]): boolean {
+    if (!pads.length) return false;
+    let changed = false;
+
+    for (const pad of pads) {
+      if (pad.ring.length < 3) continue;
+      const reach = pad.blend;
+
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const [x, z] of pad.ring) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+      }
+
+      const c0 = Math.max(0, Math.floor((minX - reach - this.originX) / this.resolution));
+      const c1 = Math.min(this.cols - 1, Math.ceil((maxX + reach - this.originX) / this.resolution));
+      const r0 = Math.max(0, Math.floor((minZ - reach - this.originZ) / this.resolution));
+      const r1 = Math.min(this.rows - 1, Math.ceil((maxZ + reach - this.originZ) / this.resolution));
+
+      for (let r = r0; r <= r1; r++) {
+        const z = this.originZ + r * this.resolution;
+        for (let c = c0; c <= c1; c++) {
+          const x = this.originX + c * this.resolution;
+          const idx = r * this.cols + c;
+          const target = pad.heightAt(x, z) - pad.depth;
+
+          if (pointInRing(x, z, pad.ring)) {
+            if (this.data[idx] !== target) {
+              this.data[idx] = target;
+              changed = true;
+            }
+            continue;
+          }
+
+          const dist = distanceToRing(x, z, pad.ring);
+          if (dist > reach) continue;
+
+          if (dist > pad.blend) continue;
+          const u = dist / pad.blend;
+          const w = 1 - u * u * (3 - 2 * u);
+          const next = this.data[idx] * (1 - w) + target * w;
+          if (next !== this.data[idx]) {
+            this.data[idx] = next;
+            changed = true;
+          }
+        }
+      }
+    }
+
+    if (changed) this.recomputeBounds();
+    return changed;
+  }
+
   /** Call after carving; the stored bounds are otherwise stale. */
   recomputeBounds(): void {
     let min = Infinity;
@@ -724,4 +832,21 @@ function chamfer(dist: Float32Array, w: number, h: number): void {
       dist[i] = best;
     }
   }
+}
+
+/** Shortest distance from a point to a ring's boundary. */
+function distanceToRing(x: number, z: number, ring: Vec2[]): number {
+  let best = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [ax, az] = ring[j];
+    const [bx, bz] = ring[i];
+    const vx = bx - ax;
+    const vz = bz - az;
+    const len2 = vx * vx + vz * vz;
+    let t = len2 < 1e-9 ? 0 : ((x - ax) * vx + (z - az) * vz) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const d = Math.hypot(x - (ax + vx * t), z - (az + vz * t));
+    if (d < best) best = d;
+  }
+  return best;
 }

@@ -24,6 +24,7 @@ import { RoadProfiles, STRUCTURE_DEPTH } from '../src/world/roadprofile';
 import { NORM_RU, gradedHalfWidth, sectionHeightAt, streetSection } from '../src/world/street';
 import { groundGrid, shoulderFor, stretch } from '../src/render/groundgrid';
 import { RoadIndex } from '../src/sim/roadindex';
+import { junctionHeightAt, type JunctionShape } from '../src/world/junctions';
 import type { Road, Vec2 } from '../src/world/types';
 
 let failures = 0;
@@ -181,9 +182,32 @@ interface Built {
  * amount of shoulder fixes that, only making a crossing one surface at one
  * height does.
  */
+function inPolygon(x: number, z: number, ring: Vec2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, zi] = ring[i];
+    const [xj, zj] = ring[j];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
 function drawnAt(
   built: Built[], x: number, z: number, reach: number,
+  junctions: readonly JunctionShape[] = [],
 ): { y: number; streets: number } {
+  // Inside a junction it is the junction that is drawn, at its own single
+  // height, and no approach is drawn there at all. Comparing the earth against
+  // a cross-section that is not on the ground would be measuring a ghost.
+  for (const j of junctions) {
+    if (Math.hypot(x - j.x, z - j.z) > j.radius + 1) continue;
+    if (inPolygon(x, z, j.ring as Vec2[])) {
+      // A junction is a crossing by definition, so it is reported with the
+      // crossings and not smuggled in among the straights.
+      return { y: junctionHeightAt(j, x, z), streets: 2 };
+    }
+  }
+
   let y = Number.NaN;
   let streets = 0;
   for (const b of built) {
@@ -226,6 +250,7 @@ function measure(shoulder: number, spacing: number): { straights: Overshoot; jun
   const terrain = makeTerrain();
   const profiles = new RoadProfiles(ROADS, terrain);
   terrain.gradeStreets(profiles.corridors(ROADS, NORM_RU), shoulder);
+  terrain.gradePads(profiles.pads());
   const mesh = new GroundMesh(RADIUS, RESOLUTION, (x, z) => terrain.heightAt(x, z));
 
   const built: Built[] = [];
@@ -258,7 +283,7 @@ function measure(shoulder: number, spacing: number): { straights: Overshoot; jun
         for (let d = -b.half; d <= b.half + 1e-6; d += 0.25) {
           const x = cx + nx * d;
           const z = cz + nz * d;
-          const drawn = drawnAt(built, x, z, spacing * 1.5);
+          const drawn = drawnAt(built, x, z, spacing * 1.5, profiles.junctions);
           const ground = mesh.at(x, z);
           if (!Number.isFinite(ground) || !Number.isFinite(drawn.y)) continue;
           (drawn.streets > 1 ? junction : straight).push(ground - drawn.y);
@@ -298,7 +323,7 @@ report('shoulder off ', without.straights);
 const shoulder = shoulderFor(grid.spacing);
 const withIt = measure(shoulder, grid.spacing);
 report(`shoulder ${shoulder.toFixed(1)} m`, withIt.straights);
-report('where two meet', withIt.junctions);
+report('near a crossing', withIt.junctions);
 
 check('without a shoulder the ground does poke through the streets',
   without.straights.poking > 0.002, without.straights.poking);
@@ -312,10 +337,18 @@ check('with a shoulder, nothing pokes through anywhere',
 // cut the earth to their own level; where those differ the lower one has
 // ground standing in it. It is bounded — the levelling caps how far apart two
 // streets at one junction may be — and it is what junction polygons are for.
-check('at a crossing the earth is at worst a street-levelling out',
-  withIt.junctions.worst < 1.0, withIt.junctions.worst);
-check('and a crossing is mostly below its paving even so',
-  withIt.junctions.poking < 0.05, withIt.junctions.poking);
+// Crossings are where this is still not finished, and a number says so better
+// than a paragraph. Inside a junction the earth is now within a few
+// centimetres of the surface drawn on it. Just outside one, where two streets
+// are both still built and both still climbing at their own gradients, the
+// earth can only follow one of them — measured at 68 cm on a hillside with
+// 12% streets, and much less than that on anything flatter. Closing it needs
+// the junction's influence to reach as far as the two streets overlap, and to
+// keep each approach's gradient while it does.
+check('near a crossing the earth is at worst one street-gradient out',
+  withIt.junctions.worst < 0.8, withIt.junctions.worst);
+check('and stays below the paving over most of a crossing',
+  withIt.junctions.poking < 0.06, withIt.junctions.poking);
 check('and the street is not left standing on a plinth either',
   -withIt.straights.median < STRUCTURE_DEPTH + 0.25, -withIt.straights.median);
 
@@ -355,6 +388,51 @@ console.log('\n--- what a car stands on ---');
     index.roadCount === 1, index.roadCount);
   check('and a square is not offered as one',
     index.nearest(0, 80, 40)?.road.id !== 'square', index.nearest(0, 80, 40)?.road.id ?? null);
+}
+
+/* ------------------------------------------------------ the junction shape */
+
+/**
+ * A junction is now a place with a boundary, and every one of them ends up in
+ * a vertex buffer, so every one of them has to be a real polygon. The failure
+ * this guards against is not "it looks wrong" — it is a NaN from a corner
+ * construction that met two parallel streets, which does not look wrong, it
+ * makes the whole mesh vanish.
+ */
+console.log('\n--- junctions as shapes ---');
+{
+  const terrain = makeTerrain();
+  const profiles = new RoadProfiles(ROADS, terrain);
+  const shapes = profiles.junctions;
+  console.log(`  ${shapes.length} junctions, `
+    + `${shapes.reduce((n, j) => n + j.approaches.length, 0)} approaches`);
+
+  let finite = true;
+  let closed = true;
+  let sized = true;
+  let onBoundary = true;
+  for (const j of shapes) {
+    if (j.ring.length < 3 || j.ring.length !== j.mouth.length) closed = false;
+    for (const [x, z] of j.ring) {
+      if (!Number.isFinite(x) || !Number.isFinite(z)) finite = false;
+    }
+    if (!Number.isFinite(j.height) || !Number.isFinite(j.radius)) finite = false;
+    if (j.radius < 1 || j.radius > 40) sized = false;
+    // Every approach must reach the boundary it is supposed to stop on.
+    for (const a of j.approaches) {
+      const tip: Vec2 = [j.x + a.dir[0] * a.stop, j.z + a.dir[1] * a.stop];
+      if (!inPolygon(tip[0] - a.dir[0] * 0.05, tip[1] - a.dir[1] * 0.05, j.ring as Vec2[])) {
+        onBoundary = false;
+      }
+    }
+  }
+
+  check('every junction ring is finite', finite);
+  check('every junction ring is a closed polygon with an edge kind per edge', closed);
+  check('and none of them has run away to the size of a district', sized);
+  check('every approach stops on the junction it belongs to', onBoundary);
+  check('a crossroads is one place, not one per pair of streets',
+    shapes.length > 0 && shapes.length <= 4, shapes.length);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall checks passed');

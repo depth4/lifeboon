@@ -16,11 +16,22 @@
  * It records the paving as it is really drawn — after junctions have
  * interrupted it, which is why it is filled in by the road builder rather than
  * computed from the road centrelines — and then it is *eroded*: a point counts
- * as "deep" only when the paving reaches at least one whole ground cell
- * further in every direction. A ground quad whose four corners are all deep
- * lies entirely under paving, because every point of a square is within
- * three-quarters of its own width of one of its corners. That is a proof
- * rather than a margin, which is what a hole in the world deserves.
+ * as "deep" only when the paving reaches `inset` metres further in every
+ * direction. The proof is then arithmetic. Take a square quad of side L whose
+ * four corners are all deep: every point of a square is within L/2 of one of
+ * its corners in the Chebyshev sense — the worst case is the centre — so if
+ * the erosion is at least L/2 the whole quad lies inside the paving. Hence
+ * `inset = L/2 + one mask cell`, the extra cell paying for the mask being a
+ * raster rather than an exact shape.
+ *
+ * A word on what this does and does not achieve in practice. A residential
+ * street is about 13 m of paving and the ground mesh has cells around 5 m, so
+ * after eroding there is barely a metre of provably-inside ground left and
+ * almost no quad fits in it. Cutting therefore fires on squares, dual
+ * carriageways and junction pads, and hardly at all on ordinary streets. That
+ * is the honest state of it: what keeps the earth out of an ordinary street is
+ * the grading and the shoulder, not this. Making the cut bite everywhere needs
+ * a ground mesh that is finer where the streets are, which is a separate job.
  */
 
 import type { Vec2 } from '../world/types';
@@ -72,7 +83,7 @@ export class StreetMask {
    * across. Nothing may be cut before this is called.
    */
   finish(groundCell: number): void {
-    this.inset = groundCell + this.cell;
+    this.inset = groundCell / 2 + this.cell;
     const radius = Math.max(1, Math.ceil(this.inset / this.cell));
     this.deep = erode(this.paved, this.cols, this.rows, radius);
   }
@@ -91,7 +102,7 @@ export class StreetMask {
    * A quad larger than this is not covered by the proof, so it is kept.
    */
   get maxCutSpan(): number {
-    return this.inset;
+    return Math.max(0, (this.inset - this.cell) * 2);
   }
 
   private triangle(a: Vec2, b: Vec2, c: Vec2): void {
