@@ -21,6 +21,23 @@ decided before you write any code.
 | Apple / HERE / TomTom | Commercial licences, negotiated, generally not aimed at this. |
 | Overture Maps | Yes — permissively licensed, and increasingly the sane choice at scale. |
 
+### Elevation
+
+Separate source, separate licence, and it was the one obligation this project
+was quietly failing. Terrain comes from the **Terrain Tiles** open dataset on
+AWS (`elevation-tiles-prod`), assembled by Mapzen/Tilezen from a dozen national
+and global datasets. Checked source by source against
+[the Tilezen attribution list](https://github.com/tilezen/joerd/blob/master/docs/attribution.md):
+
+- **No source restricts commercial use or redistribution.** 3DEP, SRTM,
+  GMTED2010 and ETOPO1 are US public domain; the rest are CC BY, Open
+  Government Licence, or explicitly free.
+- **Every source requires attribution**, and each has its own required wording.
+  The app named OpenStreetMap and said nothing about where the hills came from.
+  The full list now sits in the About panel under "Data".
+
+Switching elevation provider means switching that list with it.
+
 This project uses OpenStreetMap. Two obligations follow:
 
 - **Attribution.** "© OpenStreetMap contributors" is displayed in the UI at all
@@ -62,6 +79,10 @@ about the world. Every navigation app on Earth depends on that being true.
 
 In rough order of how likely it is to bite you:
 
+0. **Attribution you forgot.** Cheapest possible failure and the easiest to
+   miss: a second data source arrives, and the credit line does not grow with
+   it. Every source with a licence needs its line, and the line has to be in the
+   product, not in a repository file.
 1. **Service usage policy.** Far and away the most common way to get into
    trouble: pointing a public site at the volunteer-run Overpass and Nominatim
    servers and hammering them. That gets you blocked, fast, and rightly. This
