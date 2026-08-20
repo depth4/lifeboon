@@ -15,7 +15,7 @@ import { fetchArea, geocode, OverpassError } from './data/overpass';
 import { parseOsm } from './data/osm';
 import { generateCity } from './data/procedural';
 import { carveWaterways, fetchHeightfield } from './terrain/elevation';
-import { FlatTerrain, Heightfield } from './terrain/heightfield';
+import { FlatTerrain, Heightfield, type Terrain } from './terrain/heightfield';
 import { NavGraph } from './sim/navgraph';
 import { Population, type Agent } from './sim/population';
 import { RoadIndex } from './sim/roadindex';
@@ -28,6 +28,9 @@ import { buildBuildingMeshes, BuildingIndex, type BuildingMeshes } from './rende
 import { buildRailwayMeshes, buildRoadMeshes, type RoadMeshes } from './render/roads';
 import { buildGround, type GroundMeshes } from './render/ground';
 import { groundGrid, shoulderFor } from './render/groundgrid';
+import {
+  fromFixture, packFixture, toFixture, unpackFixture,
+} from './data/fixture';
 import { StreetMask } from './render/streetmask';
 import { buildProps, type Props } from './render/props';
 import { OcclusionField } from './render/occlusion';
@@ -91,6 +94,8 @@ class App {
 
   /** Distinguishes a click from the end of a drag. */
   private pointerDownAt = { x: 0, y: 0, time: 0 };
+  /** The ground as loaded, kept so a capture is of the place and not of us. */
+  private pristineTerrain: Terrain | null = null;
 
   constructor() {
     this.rig.scene.add(this.worldGroup);
@@ -122,6 +127,8 @@ class App {
       },
       onSearch: (query) => void this.search(query),
       onPickResult: (lat, lon, name, radius) => void this.loadPlace({ lat, lon }, name, radius),
+      onExportPlace: () => void this.exportPlace(),
+      onImportPlace: (file) => void this.importPlace(file),
     });
 
     window.addEventListener('resize', this.onResize);
@@ -202,6 +209,12 @@ class App {
     this.teardownWorld();
 
     this.world = world;
+    // Keep the ground exactly as it arrived, before anything resamples, carves
+    // or grades it. A capture taken after that would hold a terrain with the
+    // streets already cut into it, and loading it back would cut them in
+    // again — a road built on a road, which is the bug this whole pipeline is
+    // arranged to prevent.
+    this.pristineTerrain = world.terrain;
     // Resample the ground before anything reads a height off it. Elevation
     // tiles are far too coarse to have a street cut into them, and every
     // consumer below — the camera, the people, the geometry — has to see the
@@ -314,6 +327,56 @@ class App {
     this.hud.setLoading('Ready', 1);
     await nextFrame();
     this.hud.hideLoader();
+  }
+
+  /**
+   * Write the loaded area out as a file.
+   *
+   * The reason this exists is in `data/fixture.ts`: Overpass is unreachable
+   * from the sandbox this is developed in, so the only way a real town gets
+   * tested is if somebody carries it there.
+   */
+  private async exportPlace(): Promise<void> {
+    if (!this.world) {
+      this.hud.setCaptureStatus('Nothing is loaded yet.');
+      return;
+    }
+    this.hud.setCaptureStatus('Packing…');
+    try {
+      const fixture = toFixture(
+        this.world, this.pristineTerrain ?? this.world.terrain,
+        this.world.stats.placeName);
+      const { blob, name } = await packFixture(fixture);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      link.click();
+      URL.revokeObjectURL(url);
+      const mb = (blob.size / 1048576).toFixed(2);
+      this.hud.setCaptureStatus(`Saved ${name} — ${mb} MB. Attach it to a message.`);
+    } catch (err) {
+      this.hud.setCaptureStatus(
+        `Could not save: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Load an area somebody saved, in place of downloading one. */
+  private async importPlace(file: File): Promise<void> {
+    this.hud.setCaptureStatus(`Reading ${file.name}…`);
+    try {
+      const fixture = await unpackFixture(file);
+      this.hud.setCaptureStatus(
+        `Loaded ${fixture.place}, captured ${fixture.taken.slice(0, 16).replace('T', ' ')} UTC.`);
+      this.hud.showLoader();
+      this.hud.setLoading(`Opening ${fixture.place}…`, 0.3);
+      await nextFrame();
+      await this.installWorld(fromFixture(fixture));
+    } catch (err) {
+      this.hud.setCaptureStatus(
+        `Could not read it: ${err instanceof Error ? err.message : String(err)}`);
+      this.hud.hideLoader();
+    }
   }
 
   private teardownWorld(): void {

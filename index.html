@@ -179,6 +179,21 @@
         </p>
         <div id="about-audit"></div>
 
+        <h3>Send this place to the developer</h3>
+        <p class="fineprint">
+          Overpass cannot be reached from the sandbox this is built in, so a
+          real town can only be tested if it is carried there by hand. This
+          saves the loaded area — streets, buildings, land cover and the
+          terrain under them — as one file you can attach to a message. Load
+          one back to see exactly what somebody else was looking at.
+        </p>
+        <p class="capture-row">
+          <button class="btn" id="export-place">Save this place</button>
+          <button class="btn" id="import-place">Load a saved place</button>
+          <input type="file" id="import-file" accept=".json,.gz,application/json,application/gzip" hidden>
+        </p>
+        <p class="fineprint" id="capture-status"></p>
+
         <h3>This build</h3>
         <p class="fineprint">
           If a fix does not seem to have arrived, check this against what was

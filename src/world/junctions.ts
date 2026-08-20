@@ -75,6 +75,17 @@ export function findCrossings(roads: Road[]): Crossing[] {
 
   roads.forEach((road, index) => {
     if (!road.drivable || road.points.length < 2) return;
+    // A bridge does not meet the street it flies over, and a tunnel does not
+    // meet the street above it — they pass, which is the whole point of them.
+    // Counting those as junctions was doing real damage once a junction became
+    // a shape: the deck's height became a ring vertex, the ring warped up to
+    // meet it, and the earth was raised to the ring. Measured on the offline
+    // city: ground standing 10.2 m over a road, under a bridge crossing it.
+    //
+    // Left out by way rather than by segment, deliberately. A way is a bridge
+    // along its whole length, and its abutments join the roads it continues
+    // into by a shared node rather than by crossing them.
+    if (road.bridge || road.tunnel || road.layer < 0) return;
     let at = 0;
     for (let i = 0; i < road.points.length - 1; i++) {
       const [ax, az] = road.points[i];
@@ -368,8 +379,20 @@ export interface JunctionShape {
  * the other one reach" to mean anything, and the answer runs to infinity.
  */
 const MIN_SIN = 0.34;
-/** However the geometry works out, a junction is not half a block wide. */
-const MAX_STOP_M = 26;
+/**
+ * However the geometry works out, a junction is not half a block wide.
+ *
+ * Two streets meeting at a shallow angle overlap for a long way, and taken
+ * literally that makes the junction as long as the overlap — twenty-five
+ * metres and more. That is not a crossing, it is a merge, and treating it as
+ * one does real harm on a hillside: the mouth is then sampled far enough along
+ * the street for the street to have climbed several metres, and the junction
+ * warps up to meet it. Fifteen metres is about the largest urban crossroads
+ * there is, and no junction may be more than three times the widest street
+ * that arrives at it.
+ */
+const MAX_STOP_M = 15;
+const MAX_STOP_WIDTHS = 3;
 /** How far along a way its end has to be before it counts as arriving. */
 const STUB_M = 1.5;
 /** Points sampled along each rounded corner, endpoints excluded. */
@@ -470,7 +493,7 @@ export function buildJunctions(
         if (sin < MIN_SIN) continue;
         stop = Math.max(stop, b.half / sin);
       }
-      a.stop = Math.min(MAX_STOP_M, stop);
+      a.stop = Math.min(MAX_STOP_M, widest * MAX_STOP_WIDTHS, stop);
     }
 
     approaches.sort((p, q) =>

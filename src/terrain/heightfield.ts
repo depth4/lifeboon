@@ -717,6 +717,38 @@ export class Heightfield implements Terrain {
     return changed;
   }
 
+  /**
+   * The field as plain numbers, for writing to a file.
+   *
+   * `round` is applied to every sample: a millimetre is finer than any
+   * elevation source resolves and it halves the size of a capture, which
+   * matters because a capture has to travel through a chat message.
+   */
+  snapshot(round: (v: number) => number = (v) => v): {
+    cols: number; rows: number; originX: number; originZ: number;
+    resolution: number; data: number[];
+  } {
+    const data = new Array<number>(this.data.length);
+    for (let i = 0; i < this.data.length; i++) data[i] = round(this.data[i]);
+    return {
+      cols: this.cols,
+      rows: this.rows,
+      originX: this.originX,
+      originZ: this.originZ,
+      resolution: this.resolution,
+      data,
+    };
+  }
+
+  /** Rebuild a field from `snapshot`. */
+  static fromSnapshot(s: {
+    cols: number; rows: number; originX: number; originZ: number;
+    resolution: number; data: number[];
+  }): Heightfield {
+    return new Heightfield(
+      Float32Array.from(s.data), s.cols, s.rows, s.originX, s.originZ, s.resolution);
+  }
+
   /** Call after carving; the stored bounds are otherwise stale. */
   recomputeBounds(): void {
     let min = Infinity;

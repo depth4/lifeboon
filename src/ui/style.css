@@ -759,3 +759,11 @@ kbd {
     display: none;
   }
 }
+
+/* The capture controls in the About panel: two buttons on one line. */
+.capture-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 6px;
+}

@@ -120,8 +120,24 @@ and the city came out as floating slabs.
 ## Environment
 
 - **Overpass and Nominatim are blocked by the agent proxy.** Real cities can
-  never be loaded from the sandbox — only the generated offline city. Any fix
-  to the real-OSM path is unverified until the user checks it. Say so.
+  never be *downloaded* from the sandbox. But they no longer have to be:
+
+  **Ask the user for a capture.** In the running site, About → "Save this
+  place" writes the loaded area — streets, buildings, land cover and the
+  terrain under them — to one gzipped file, around 0.2 MB for a small town.
+  They attach it to a message; you read it with `npm run place -- <file>`,
+  which reports the same measurements `tests/ground.ts` reports, and you can
+  load it back into the app with the "Load a saved place" button beside it and
+  *look* at their town in the sandbox browser.
+
+  This was the single biggest hole in how this project was worked on. Before
+  it, every fix to the real-OSM path shipped unverified and the user found the
+  bugs by looking at the deployed site. Ask for a capture before guessing.
+
+  The offline city is also the **wrong shape** for testing junctions: it draws
+  long streets crossing each other, where OSM splits every street at every
+  junction and joins the pieces end to end. Both topologies are covered in
+  `tests/ground.ts`; a capture covers the real one.
 - Terrain tiles (`s3.amazonaws.com/elevation-tiles-prod`) work from Node but
   not from sandboxed Chromium. Proxy them via a Playwright route handler.
 - Chromium: `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, launch with
@@ -162,6 +178,11 @@ Drive them from Playwright, waiting ~9 s per frame (SwiftShader is that slow).
 - **What is the range of this noise?** Bundle the module with esbuild and run it
   in Node over 200 k samples. `fbm` turned out to have a standard deviation of
   0.275, not 1 — which is why the quantised field parcels came out invisible.
+- **What does a real town measure?** `npm run place -- capture.json.gz`, on a
+  file the user exported from the running site. It found, within a minute of
+  existing, that a bridge was being treated as a junction with the street it
+  flew over — 10 m of earth raised under it — which no synthetic scene had
+  ever produced.
 - **Does the ground stand in the road?** `tests/ground.ts`, and it needs no
   browser at all: the ground mesh is grid vertices sampled from the heightfield
   and joined by triangles, which is arithmetic. Build a hard hillside, cut
@@ -175,7 +196,8 @@ Drive them from Playwright, waiting ~9 s per frame (SwiftShader is that slow).
 ```
 npm run dev        # vite dev server
 npm run build      # tsc --noEmit && vite build
-npm test           # 100+ checks: OSM parsing, vehicle physics, driving
+npm test           # 100+ checks: OSM parsing, vehicle physics, driving, ground
+npm run place -- f # measure a capture the user exported from the site
 npx vite preview --port 4173 --host 127.0.0.1
 ```
 

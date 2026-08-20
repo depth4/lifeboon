@@ -25,6 +25,10 @@ export interface HudCallbacks {
   onPickResult(lat: number, lon: number, name: string, radius: number): void;
   onFollow(): void;
   onDeselect(): void;
+  /** Save the loaded area to a file that can be sent to somebody else. */
+  onExportPlace(): void;
+  /** Load an area somebody else saved. */
+  onImportPlace(file: File): void;
 }
 
 const BUILDING_LABEL: Record<Building['kind'], string> = {
@@ -86,6 +90,7 @@ export class Hud {
   private readonly searchInput = $<HTMLInputElement>('search-input');
   private readonly searchBtn = $<HTMLButtonElement>('search-btn');
   private readonly radiusSelect = $<HTMLSelectElement>('radius-select');
+  private readonly captureStatus = $('capture-status');
   private readonly searchResults = $('search-results');
 
   private lastStatsUpdate = 0;
@@ -220,6 +225,11 @@ export class Hud {
     this.driveBtn.title = available
       ? 'Put a car on the street below and drive it'
       : 'No street nearby to start from — move the view over a road first';
+  }
+
+  /** One line under the capture buttons: what just happened, or what failed. */
+  setCaptureStatus(text: string): void {
+    this.captureStatus.textContent = text;
   }
 
   /**
@@ -414,6 +424,16 @@ export class Hud {
   }
 
   private bindAbout(): void {
+    $('export-place').addEventListener('click', () => this.cb.onExportPlace());
+    const picker = $<HTMLInputElement>('import-file');
+    $('import-place').addEventListener('click', () => picker.click());
+    picker.addEventListener('change', () => {
+      const file = picker.files?.[0];
+      // Cleared so picking the same file twice in a row still fires.
+      picker.value = '';
+      if (file) this.cb.onImportPlace(file);
+    });
+
     const modal = $('about-modal');
     modal.hidden = true;
     $('about-btn').addEventListener('click', () => {
@@ -466,3 +486,4 @@ function escapeHtml(str: string): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
