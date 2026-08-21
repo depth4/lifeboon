@@ -21,11 +21,16 @@ import { Population, type Agent } from './sim/population';
 import { RoadIndex } from './sim/roadindex';
 import { DrivenVehicle, type DriveControls } from './sim/driver';
 import { CITY_MICROCAR } from './sim/vehicles';
-import { GRADING_GRID_M, RoadProfiles, isUnderground } from './world/roadprofile';
+import { GRADING_GRID_M, isUnderground } from './world/roadprofile';
+import { RoadNetwork } from './world/network';
+import { placeNetwork, type PlacedNetwork } from './world/parts/place';
+import { corridorsFrom, padsFrom } from './world/parts/earth';
+import { PartField } from './world/partfield';
 import { SceneRig } from './render/scene';
 import { CameraController } from './render/camera';
 import { buildBuildingMeshes, BuildingIndex, type BuildingMeshes } from './render/buildings';
-import { buildRailwayMeshes, buildRoadMeshes, type RoadMeshes } from './render/roads';
+import { buildRailwayMeshes, type RailMeshes } from './render/rails';
+import { buildPartMeshes, type PartMeshes } from './render/parts';
 import { buildGround, type GroundMeshes } from './render/ground';
 import { groundGrid, shoulderFor } from './render/groundgrid';
 import {
@@ -73,9 +78,25 @@ class App {
   private roadIndex: RoadIndex | null = null;
 
   private buildingMeshes: BuildingMeshes | null = null;
-  private roadMeshes: RoadMeshes | null = null;
-  private railMeshes: RoadMeshes | null = null;
+  private roadMeshes: PartMeshes | null = null;
+  private railMeshes: RailMeshes | null = null;
   private groundMeshes: GroundMeshes | null = null;
+
+  /**
+   * The network and the parts placed from it, public so they can be probed
+   * from the console:
+   *
+   *     lifeboon.network.turns.length
+   *     lifeboon.partField.sample(x, z)
+   *
+   * Every rendering bug ever found in this project was found by querying the
+   * live scene, not by looking at it.
+   */
+  network: RoadNetwork | null = null;
+  placed: PlacedNetwork | null = null;
+  /** The one index of what is built where: read by the car and by the ground. */
+  partField: PartField | null = null;
+
   private props: Props | null = null;
   private readonly worldGroup = new THREE.Group();
 
@@ -245,8 +266,19 @@ class App {
     // off the ground as it stands, and everything downstream reads those same
     // numbers — the geometry, the embankments and the car. Recomputing a
     // profile after grading would describe a road built on top of a road.
-    const profiles = new RoadProfiles(world.roads, world.terrain);
-    const corridors = profiles.corridors(world.roads, world.norm);
+    //
+    // The network first, then the parts: nodes, edges, streets and lanes, and
+    // then one placement pass that decides every mouth before any geometry
+    // exists. Nothing below this line reads an OpenStreetMap way to work out
+    // where a street is — that was the architectural fault the whole rewrite
+    // is aimed at, and this is the line where it stops.
+    const net = RoadNetwork.build(world.roads);
+    const placed = placeNetwork(net, world.roads, world.terrain, world.norm);
+    this.network = net;
+    this.placed = placed;
+    this.partField = new PartField(placed.parts);
+
+    const corridors = corridorsFrom(placed, world.norm);
     // The shoulder — how far beyond a street's edge the earth may not stand
     // higher than the street — has to be at least one cell of the mesh that
     // will draw the ground, so the mesh is asked how wide its cells are.
@@ -255,7 +287,7 @@ class App {
     // Then the junctions, which override the streets inside their own
     // boundary: at a crossing it is the crossing that gets drawn, so it is the
     // crossing that decides the earth under it.
-    world.terrain.gradePads(profiles.pads());
+    world.terrain.gradePads(padsFrom(placed));
 
     // Where the buildings shut the ground in. Every surface that meets the
     // earth is shaded with this, which is what makes a wall look like it is
@@ -269,10 +301,7 @@ class App {
     this.hud.setLoading('Paving the streets…', 0.65);
     await nextFrame();
     const mask = new StreetMask(world.radius);
-    this.roadMeshes = buildRoadMeshes(
-      world.roads, world.terrain, profiles, world.norm, occlusion, mask,
-      world.radius,
-    );
+    this.roadMeshes = buildPartMeshes(placed.parts, occlusion, mask);
     mask.finish(grid.spacing);
     this.worldGroup.add(this.roadMeshes.group);
 
@@ -311,7 +340,7 @@ class App {
     // driving across a field.
     this.roadIndex = new RoadIndex(
       world.roads.filter((r) => !isUnderground(r)),
-      world.terrain, profiles, world.norm,
+      world.terrain, null, world.norm, this.partField,
     );
     this.hud.setDriveAvailable(this.roadIndex.roadCount > 0);
 

@@ -29,7 +29,7 @@ import type { AreaFeature, Vec2, Waterway } from '../world/types';
 import type { Terrain } from '../terrain/heightfield';
 import { fbm } from '../core/noise';
 import { groundTexture } from './textures';
-import { emitRibbon, offsetPolyline } from './roads';
+import { emitRibbon, offsetPolyline } from './ribbon';
 import type { OcclusionField } from './occlusion';
 import type { StreetMask } from './streetmask';
 import { AREA_COLOR, AreaField, inRing, triangulate } from './areafield';

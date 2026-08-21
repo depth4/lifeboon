@@ -11,7 +11,6 @@
  */
 
 import { RoadNetwork } from '../src/world/network';
-import { pavementBands } from '../src/render/roads';
 import type { Road, Vec2 } from '../src/world/types';
 
 let failures = 0;
@@ -156,40 +155,6 @@ console.log('\n--- one street, one width ---');
   ]);
   check('but a change of class is allowed to change the width',
     new Set(reclassed.edges.map((e) => e.width)).size === 2);
-}
-
-/* -------------------------------------------------- pavement, once only */
-
-/**
- * The bug this pins down shipped, and the user saw both halves of it at once:
- * a doubled pavement where the map already had a footway, and no pavement at
- * all where it did not. One swapped argument. The two lists are complements
- * and which is which is the whole behaviour, so it is stated here in numbers
- * rather than left to be read correctly at a call site.
- */
-console.log('\n--- our pavement yields to a surveyed one ---');
-{
-  const interrupted = [false, false, true, false];   // a junction on segment 2
-  const shadowed = [true, true, false, false];       // a footway beside 0 and 1
-  const { paving, verge } = pavementBands(interrupted, shadowed);
-
-  check('paving is skipped where a footway already runs',
-    paving !== null && paving[0] && paving[1], paving);
-  check('and laid where none does',
-    paving !== null && !paving[3], paving);
-  check('grass takes exactly what the paving gave up',
-    verge !== null && !verge[0] && !verge[1] && verge[3], verge);
-  check('and neither is laid across a junction',
-    paving !== null && verge !== null && paving[2] && verge[2]);
-  check('no stretch is left with nothing on it',
-    paving !== null && verge !== null
-      && paving.every((p, i) => !p || !verge[i] || interrupted[i]));
-
-  const nothingShadowed = pavementBands(interrupted, [false, false, false, false]);
-  check('with no footway anywhere, every stretch is paving and none is grass',
-    nothingShadowed.paving !== null && nothingShadowed.verge !== null
-      && nothingShadowed.paving.filter(Boolean).length === 1
-      && nothingShadowed.verge.every(Boolean));
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall checks passed');

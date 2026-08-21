@@ -16,7 +16,11 @@ Pages. ~15 500 lines, no game engine.
 
 `docs/STATE.md` is where the project stands: what is proven, what is broken
 with numbers, what a rewrite should keep. Read it before proposing anything
-structural.
+structural. `docs/PARTS.md` is the architecture as it is now: the world is
+built out of **parts** — functional units that own the ground they stand on,
+cell by cell — and the renderer draws those cells rather than reading
+OpenStreetMap. Anything that computes a surface height outside a part is a bug
+by construction.
 
 ## Non-negotiable
 
@@ -24,7 +28,7 @@ structural.
   The deploy workflow watches that branch and only that branch. The owner has
   one build and wants one branch — do not invent feature branches unless they
   ask.
-- **`npm test` before every commit.** 138+ checks. The numbers it prints are
+- **`npm test` before every commit.** 167+ checks. The numbers it prints are
   regression detectors, not decoration: if top speed, stopping distance or the
   share of ground standing in a road moves, something changed that should not
   have.

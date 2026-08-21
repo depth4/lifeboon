@@ -323,7 +323,7 @@ export function generateCity(seedText = 'lifeboon', radius = 900): World {
 
   return {
     buildings,
-    roads,
+    roads: splitAtCrossings(roads),
     railways: [],
     waterways: [],
     areas,
@@ -350,4 +350,96 @@ export function generateCity(seedText = 'lifeboon', radius = 900): World {
       attribution: 'Procedurally generated — no map data used',
     },
   };
+}
+
+/**
+ * Cut the generated ways at their crossings, the way OpenStreetMap stores them.
+ *
+ * The offline city drew long streets straight through one another, which is
+ * the *wrong shape* for testing anything: OSM splits every street at every
+ * junction and joins the pieces end to end, and it is that shared end point
+ * that tells the network where a junction is. With crossing-through ways the
+ * network finds no junctions at all — measured on this city: 114 nodes, 57
+ * edges, not one crossroads — so the offline city silently exercised only the
+ * easiest half of the code and every junction bug had to be found on a real
+ * town instead.
+ *
+ * Bridges are left alone on purpose. A deck crosses without meeting, and
+ * cutting it at the street below would invent exactly the junction that a
+ * bridge exists not to be.
+ */
+function splitAtCrossings(roads: Road[]): Road[] {
+  const passing = (road: Road) => road.bridge || road.tunnel || road.layer !== 0;
+  // Where each way has to gain a point: distance along it, and the point.
+  const cuts = roads.map(() => [] as Array<{ at: number; p: Vec2 }>);
+
+  for (let a = 0; a < roads.length; a++) {
+    if (passing(roads[a])) continue;
+    for (let b = a + 1; b < roads.length; b++) {
+      if (passing(roads[b])) continue;
+      const pa = roads[a].points;
+      const pb = roads[b].points;
+      for (let i = 0; i < pa.length - 1; i++) {
+        for (let j = 0; j < pb.length - 1; j++) {
+          const hit = meet(pa[i], pa[i + 1], pb[j], pb[j + 1]);
+          if (!hit) continue;
+          cuts[a].push({ at: i + hit.ta, p: hit.p });
+          cuts[b].push({ at: j + hit.tb, p: hit.p });
+        }
+      }
+    }
+  }
+
+  const out: Road[] = [];
+  roads.forEach((road, index) => {
+    const mine = cuts[index]
+      .filter((c) => c.at > 0.02 && c.at < road.points.length - 1.02)
+      .sort((x, y) => x.at - y.at);
+    if (!mine.length) {
+      out.push(road);
+      return;
+    }
+
+    // Rebuild the way with the crossing points in it, remembering which of its
+    // points are junctions, then break it there.
+    const points: Vec2[] = [];
+    const breaks: number[] = [];
+    let next = 0;
+    for (let i = 0; i < road.points.length; i++) {
+      points.push(road.points[i]);
+      while (next < mine.length && mine[next].at < i + 1) {
+        breaks.push(points.length);
+        points.push(mine[next].p);
+        next++;
+      }
+    }
+
+    let start = 0;
+    let piece = 0;
+    for (const at of [...breaks, points.length - 1]) {
+      if (at <= start) continue;
+      const slice = points.slice(start, at + 1);
+      if (slice.length >= 2) {
+        out.push({ ...road, id: `${road.id}#${piece++}`, points: slice });
+      }
+      start = at;
+    }
+  });
+  return out;
+}
+
+/** Where two segments cross, if they do, and how far along each. */
+function meet(
+  a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec2,
+): { ta: number; tb: number; p: Vec2 } | null {
+  const ax = a1[0] - a0[0];
+  const az = a1[1] - a0[1];
+  const bx = b1[0] - b0[0];
+  const bz = b1[1] - b0[1];
+  const det = ax * bz - az * bx;
+  if (Math.abs(det) < 1e-9) return null;
+  const ta = ((b0[0] - a0[0]) * bz - (b0[1] - a0[1]) * bx) / det;
+  const tb = ((b0[0] - a0[0]) * az - (b0[1] - a0[1]) * ax) / det;
+  if (ta <= 0 || ta >= 1 || tb <= 0 || tb >= 1) return null;
+  return { ta, tb, p: [a0[0] + ax * ta, a0[1] + az * ta] };
 }

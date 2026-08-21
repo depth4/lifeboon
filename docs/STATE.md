@@ -12,14 +12,19 @@ Read `CLAUDE.md` first for how to work here. This file is the *state*.
 
 Lifeboon loads a real place from OpenStreetMap, builds terrain under it from
 real elevation tiles, and draws a 3D city you can drive a car around. About
-15 500 lines of TypeScript. The world model, the terrain, the car physics and
-the OSM tag interpretation are solid and measured. The **renderer draws
-directly from OSM ways**, and that is the architectural fault line: every
-recurring bug — ground poking through roads, doubled pavements, junctions that
-are separate plateaux, overlapping road surfaces — comes from geometry being
-derived from map data at draw time instead of from a world model that owns the
-ground it stands on. A road network model (`src/world/network.ts`) was built
-as the beginning of the fix; nothing renders from it yet.
+15 000 lines of TypeScript. The world model, the terrain, the car physics and
+the OSM tag interpretation are solid and measured.
+
+**The renderer no longer reads OpenStreetMap.** That was the architectural
+fault line, and it is closed for streets: the network
+(`src/world/network.ts`) is turned into **parts** — functional units that own
+the ground they stand on, cell by cell — by one placement pass
+(`src/world/parts/place.ts`), and everything downstream reads those parts.
+`render/roads.ts`, the 1333-line file every rule in `CLAUDE.md` was written
+because of, is deleted. See `docs/PARTS.md`.
+
+What has not moved yet: buildings, props and railways are still swept from the
+data, and `tests/ground.ts` still measures the old path.
 
 ---
 
@@ -37,7 +42,10 @@ as the beginning of the fix; nothing renders from it yet.
 | Junctions | `world/junctions.ts` (812) | **Half solid.** The shape construction (approach bearings, outward kerb fillets, warped ring, `junctionHeightAt`) is right: 1 folded ring out of 454. The *discovery* half duplicates what the network already knows. |
 | Road network | `world/network.ts` (547) | **New, tested, unused by the renderer.** Nodes / edges / streets / lanes / turns, welded from shared OSM points. Alapaevsk: 902 nodes, 1136 edges, 605 streets, 1937 lanes, 3868 turns, 132 crossroads, 288 T-junctions, 205 dead ends, 91.1 km of kerbside parking. |
 | Ground | `render/ground.ts`, `groundgrid.ts`, `areafield.ts`, `streetmask.ts`, `claims.ts` | **One surface.** Land cover is paint sampled from a raster, not a mesh over the earth; streets cut the ground away rather than lying on it; `claims.ts` decides which way owns each square metre so two ways stop drawing over each other. |
-| Roads renderer | `render/roads.ts` (1333) | **The problem child.** Sweeps OSM ways directly into geometry, with end fills, junction patches, band yielding and ownership tests bolted on. Every rule in `CLAUDE.md` about lifts and cuts exists because of this file. |
+| **Parts** | `world/parts.ts`, `world/parts/*` (≈900 together) | **The current architecture.** A part is one piece of world with one owner: a lattice of cells, each saying what it is and what may be done on it, connected to its neighbours through ports decided before any geometry exists. `docs/PARTS.md`. |
+| Part index | `world/partfield.ts` | One spatial lookup over every cell of every part. Replaces `claims.ts`, and is what the car and the ground both read. |
+| Parts renderer | `render/parts.ts` (≈370) | Deliberately stupid: it is handed placed parts and turns their cells into triangles. Knows nothing about OSM, junctions or ownership. |
+| Roads renderer | *deleted* | `render/roads.ts` (1333 lines) and `render/claims.ts` (211) are gone. What survived of them: `render/ribbon.ts` (the polyline offset and ribbon emitter, still used by the ground and the railway) and `render/rails.ts`. |
 | Buildings, props, people | `render/buildings.ts` (547), `props.ts`, `people.ts` | Work. Closed shells, no interiors, no brands. Triangle budget matters: instanced props multiply. |
 | Look | `render/palette.ts`, `textures.ts` | Works. Little contrast between materials, real variation within each, all varied by one world-space noise. |
 | Car | `sim/vehicle.ts`, `sim/driver.ts` | **Solid and validated against real numbers**: top speed ~130 km/h for a city microcar, 0–100 scaling with power/weight, braking distance from 60, a 12 % hill costing most of the speed, one grip number spent by driving, braking and cornering together. |
@@ -62,6 +70,19 @@ past the loaded edge: 2.96% of 188532 samples poke through, worst  71.2 cm, typi
 On the synthetic hillside in `tests/ground.ts` the same measurement is
 **0.00 %** (worst −4 cm). That gap between a clean test scene and a dirty real
 town is the most useful single fact in this file, and §4.2 is why.
+
+**These numbers are from before the parts layer, and nobody has re-measured a
+real town since.** `npm run place` now measures the parts pipeline, so the
+first capture the user sends will say whether it moved. What has been measured,
+on an OSM-shaped grid on a hillside (`tests/parts.ts`) and on the offline city:
+
+```
+junction to its own arms : mean 0.19 cm, worst 0.51 cm   (was 14.3 / 110)
+built surface claimed twice : 0.28%                      (was 1.26%)
+...of which paved twice     : 0.03%
+carriageway that knows its lane : all of it              (was none)
+offline city: 843 parts, 263 junctions, 3435 turns
+```
 
 Other measured facts:
 
@@ -92,19 +113,26 @@ street to keep the earth below the pavement. The synthetic test uses 4 m cells
 and comes out perfect; the real town does not. Any fix that is validated only
 on the test scene is validated on the easy case.
 
-### 4.3 The renderer reads OSM, not a model
+### 4.3 The renderer reads OSM, not a model — **fixed for streets**
 
-`render/roads.ts` decides geometry from ways. So two parallel OSM ways (a
-service road drawn 4 m from the street it serves) both build a full
-cross-section over the same earth, and the only defence is a raster of ground
-claims applied afterwards. **This is the architectural fault**, and everything
-in §4.2–§4.5 is downstream of it.
+It used to. `render/roads.ts` decided geometry from ways, so two parallel OSM
+ways both built a full cross-section over the same earth and the only defence
+was a raster of ground claims applied afterwards.
 
-### 4.4 Three notions of "where streets meet"
+Streets and junctions are now placed as parts and drawn from them; nothing
+between the importer and the picture reads a way. Buildings, props and railways
+still do, and they are the remaining half of this item.
 
-`navgraph` welds at 0.6 m, `junctions` clusters at 6 m, `roadindex` has no
-notion at all, `network` welds at its own tolerance. They disagree, and each
-disagreement is a class of bug. There must be exactly one.
+### 4.4 Three notions of "where streets meet" — **mostly fixed**
+
+`navgraph` welded at 0.6 m, `junctions` clustered at 6 m, `roadindex` had no
+notion at all, `network` welded at its own tolerance.
+
+The network is now the only one that decides: junctions are built from its
+nodes, the earth is cut to what those junctions decided, and `roadindex` takes
+its surface height from the part field rather than recomputing a section of its
+own. `navgraph` still welds separately, and `world/junctions.ts` is still alive
+because `tests/ground.ts` measures through it.
 
 ### 4.5 Nothing for courtyards or parking areas
 
@@ -127,15 +155,23 @@ that cannot be reconciled with one another.
 | `render/streetmask.ts` | Paved-area raster, `Uint8Array` | `max(1, radius/500)` = **3 m** at the same radius |
 | `render/roads.ts` | Per-segment boolean arrays: `combine`, `invert`, `pavementBands`, the per-band `yielded` test | one flag per segment of one way |
 
-All four answer versions of the same question — *which square metre is covered
-by what* — and they answer it differently. The two rasters differ by a factor
-of six in cell size alone. Every "the pavement is doubled here and missing
-there" bug lives in the gaps between these four.
+All four answered versions of the same question — *which square metre is
+covered by what* — and they answered it differently. The two rasters differed
+by a factor of six in cell size alone. Every "the pavement is doubled here and
+missing there" bug lived in the gaps between these four.
 
-This reframes §4.3. The renderer reading OSM is the cause; **this** is the
-shape the damage took. And it puts the rejection of a real boolean library back
-on the table: refusing the technique did not avoid the complexity, it scattered
-it.
+**Now there is one.** A part's cells *are* the answer: `world/partfield.ts` is
+a spatial index over them and stores no geometry of its own, so it cannot drift
+from the picture. `claims.ts` is deleted, `streetmask.ts` is stamped from the
+very quads the renderer draws, and the boolean question — where does one
+street's claim stop and the next begin — is answered once, by the ports, before
+any geometry exists.
+
+The reviewer's other proposal, a real polygon-clipping library, is still worth
+having and is *not* what was needed here: the conflict was never between
+arbitrary polygons, it was between two streets that share a node, and a node
+knows how to divide its own ground. Clipping becomes worth its weight when
+junctions grow kerb rings and corner pavements (§6 of `docs/PARTS.md`).
 
 ### 4.7 No traffic worth the name
 
@@ -208,17 +244,22 @@ Rewriting these would be pure waste; they are correct and paid for:
 
 ### The order to build in
 
-1. Terrain that can be edited: heightfield + `cut(polygon, profile)`.
-2. The network as the *only* source of roads (half exists already).
-3. The builder: place a road → weld + cut + claim, one operation.
-4. Render the network. Nothing renders from OSM.
-5. The importer: OSM → builder calls. All correction lives here.
-6. Junctions as first-class network objects: priorities, then signals.
+1. ~~Terrain that can be edited: heightfield + `cut(polygon, profile)`.~~ Done
+   before this: `gradeStreets` / `gradePads`, now driven by the parts.
+2. ~~The network as the *only* source of roads.~~ **Done.**
+3. ~~The builder: place a road → weld + cut + claim, one operation.~~ **Done** —
+   `world/parts/place.ts`.
+4. ~~Render the network. Nothing renders from OSM.~~ **Done for streets**;
+   buildings, props and railways still sweep from the data.
+5. The importer: OSM → builder calls. All correction lives here. *Partly*: the
+   network reconciles street width and class, welds nodes and refuses to weld a
+   bridge into a junction. Courtyard detection and duplicate-way removal are
+   not written.
+6. Junctions as first-class network objects: priorities, then signals. **The
+   place now exists to hang them on.**
 7. `Place`: courtyards and car parks as areas attached to network nodes.
-8. Traffic on lanes.
-
-Each step is shippable and visible. Step 4 is where the user would first see
-the difference.
+8. Traffic on lanes. The lanes are in the lattice: every square metre of
+   carriageway knows which lane it is.
 
 ---
 

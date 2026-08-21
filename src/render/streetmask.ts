@@ -35,7 +35,7 @@
  */
 
 import type { Vec2 } from '../world/types';
-import { offsetPolyline } from './roads';
+import { offsetPolyline } from './ribbon';
 
 export class StreetMask {
   private readonly paved: Uint8Array;
@@ -59,6 +59,18 @@ export class StreetMask {
     this.originX = -span / 2;
     this.originZ = -span / 2;
     this.paved = new Uint8Array(this.cols * this.rows);
+  }
+
+  /**
+   * Stamp one quad of paving, given its four corners in order.
+   *
+   * What the parts layer uses. It is finer-grained than stamping a whole
+   * corridor and it is the truth rather than a reconstruction of it: the quad
+   * passed in is a cell of a part, which is the same quad the renderer drew.
+   */
+  stampQuad(a: Vec2, b: Vec2, c: Vec2, d: Vec2): void {
+    this.triangle(a, b, c);
+    this.triangle(a, c, d);
   }
 
   /**

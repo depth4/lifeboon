@@ -122,6 +122,9 @@ and the city came out as floating slabs.
 | Underground | `tunnel=yes` or `layer < 0` → not drawn, not in the road index. |
 | Ground level | **One surface.** Land cover is paint on the ground (`render/areafield.ts`), not a mesh over it; streets cut the ground away (`render/streetmask.ts`) rather than lying on it. Adding a second surface over the same square metre, or a constant to hold two apart, is how every recurring bug in this project started. |
 | Streets | A street is a **cross-section** (`world/street.ts`), not a stack of flat sheets. Kerb, verge and pavement have real heights and real vertical faces. Never add a "lift" constant to keep two surfaces apart — give them different places in the section instead. |
+| Parts | The world is built out of **functional units** (`world/parts.ts`): a stretch of street, a junction. Each owns a lattice — rows along it, columns across it — and every cell says what it is and what may be done on it. The renderer draws those cells, the car reads those cells, a pedestrian reads those cells. **Never compute a surface height anywhere else.** See `docs/PARTS.md`. |
+| Ports | Parts connect through ports, computed **once** in `world/parts/place.ts` before any geometry exists. A junction is built from its arms' ports; those arms are trimmed back to the same ports. That is why two parts cannot pave the same square metre, and it is not to be worked around. |
+| The quad split | `render/parts.ts` and `world/partfield.ts` split a cell into triangles the same way (0-1-2, 0-2-3). Change one and the car drives on a surface a centimetre from the one you can see. |
 | Grading | The earth is **cut to carry the streets** (`Heightfield.gradeStreets`) before anything is built on it. Under the built width it is cut flat, to the lowest point of the section — a 4 m grid cannot follow a 15 cm kerb. |
 | The shoulder | For about one **ground-mesh** cell past a street's built edge, the earth may not stand higher than the back of the pavement. This is the only reason ground stops poking through road edges, and it must be sized from `groundGrid()` in `render/groundgrid.ts`, never from the elevation resolution — on a big city the mesh is capped and its cells are coarser. |
 | Cutting the ground | A ground quad may be dropped only where **proven** to lie under paving: four corners at least one cell inside the paved region. An overshoot is a window through the world to the sky. Never widen the cut to save triangles. |
@@ -225,16 +228,20 @@ ground standing in a road moves, something changed that should not have.
 | Path | What |
 |---|---|
 | `src/data/` | Overpass fetch + cache, OSM parsing, offline city generator |
+| `src/world/parts.ts` | **The functional units the world is made of.** Read `docs/PARTS.md` first |
+| `src/world/parts/place.ts` | Placing the network: one operation, decided in order |
+| `src/world/partfield.ts` | The one index of what is built where |
+| `src/render/parts.ts` | Drawing parts. Knows nothing about OpenStreetMap |
 | `src/render/groundgrid.ts` | The ground mesh's grid: the one place the core-spacing formula lives |
 | `src/render/areafield.ts` | Land cover, as paint the ground mesh samples |
 | `src/render/streetmask.ts` | Where paving really went, so the ground can be cut away under it |
 | `src/world/` | World model types, road profiles, street cross-sections, junctions |
 | `src/world/network.ts` | The road network: nodes, edges, streets, lanes, turns. The start of the architecture everything else should move onto |
-| `src/render/claims.ts` | Which way owns each square metre of ground, so two ways stop building over each other |
 | `src/terrain/` | Heightfield, elevation tiles, waterway carving |
 | `src/sim/` | Nav graph, population, vehicle physics, driver, road index |
-| `src/render/` | Scene, camera, ground, roads, buildings, people, car |
+| `src/render/` | Scene, camera, ground, parts, buildings, people, car |
 | `docs/STATE.md` | **Read this first.** Where the project stands in full: what is proven, what is broken with numbers, what a rewrite should keep and what it should burn |
+| `docs/PARTS.md` | **The current architecture**: the world as functional units, why, and what it measures |
 | `docs/GROUND-REWRITE.md` | Why the ground is one surface, how the street cuts it, the measurements, and what is still wrong (crossings) |
 | `docs/ROAD-NETWORK.md` | Why roads became a network, the model, and the order to migrate onto it |
 | `docs/DECISIONS.md` | What was tried, what worked, what is still open |

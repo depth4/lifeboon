@@ -3,7 +3,10 @@
 The decision, the model, and the order it gets built in. Written so a fresh
 session can pick this up from this file alone.
 
-**Status: agreed, being built.** Agreed with the user on 2026-08-20, after
+**Status: built, and streets now render from it.** See `docs/PARTS.md` for the
+layer that sits on top of this one and turns it into geometry.
+
+**Status when written: agreed, being built.** Agreed with the user on 2026-08-20, after
 they read the measurements below and said: *"ну где ты видел чтобы дорога
 расширялась. Скорее всего несовершенность данных которые мы должны
 исправлять. Твоя задача в будущем полностью имитировать движение машин в
@@ -153,11 +156,11 @@ before and after.
 
 ## 6. Order of migration, so nothing is wasted
 
-| # | Step | Useful on its own? |
+| # | Step | State |
 |---|---|---|
-| 1 | Build the network beside the existing code, and measure it | Yes — it is the audit |
-| 2 | Junction shapes read the network's nodes and approaches | Yes — fixes street identity at crossings |
-| 3 | Street reconciliation feeds the cross-section | Yes — the visible width jumps go |
-| 4 | `RoadIndex` answers "which lane" instead of "which polyline" | Needed for traffic |
-| 5 | `NavGraph` becomes the pedestrian side of the same network | Removes the third node set |
-| 6 | Signals and priorities hang on nodes and turns | The point of all of it |
+| 1 | Build the network beside the existing code, and measure it | **done** |
+| 2 | Junction shapes read the network's nodes and approaches | **done** — `world/parts/junction.ts`, built from ports |
+| 3 | Street reconciliation feeds the cross-section | **done** — the part is built from `edge.width`, which is the street's width |
+| 4 | `RoadIndex` answers "which lane" instead of "which polyline" | **half** — every square metre of carriageway knows its lane (`PartField.sample().lane`); `RoadIndex` still finds the *way* by polyline |
+| 5 | `NavGraph` becomes the pedestrian side of the same network | not started — this is the last of the three node sets |
+| 6 | Signals and priorities hang on nodes and turns | not started; the place to hang them now exists |

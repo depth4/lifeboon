@@ -19,6 +19,7 @@
  */
 
 import type { Terrain } from '../terrain/heightfield';
+import type { PartField } from '../world/partfield';
 import { roadSurfaceProfile, type RoadProfiles } from '../world/roadprofile';
 import {
   gradedHalfWidth, sectionHalfWidth, sectionHeightAt, streetSection,
@@ -66,6 +67,16 @@ export class RoadIndex {
   private readonly terrain: Terrain;
   private readonly shared: RoadProfiles | null;
   private readonly norm: StreetNorm;
+  /**
+   * What was actually built here, cell by cell.
+   *
+   * When it is present the height under the wheels comes from the very quad
+   * the renderer drew, and the two cannot drift apart. Without it the index
+   * recomputes a cross-section of its own, which is a second opinion about a
+   * surface that already exists — and a second opinion is how a car ends up
+   * driving a third of a metre below the asphalt it can see.
+   */
+  private readonly field: PartField | null;
   /** Cross-sections per way, built on first use. */
   private readonly sections = new Map<number, StreetEdge[]>();
   /** Surface heights per way, built on first use — most ways are never driven. */
@@ -82,11 +93,13 @@ export class RoadIndex {
     terrain: Terrain,
     shared: RoadProfiles | null = null,
     norm: StreetNorm = NORM_DEFAULT,
+    field: PartField | null = null,
   ) {
     this.roads = roads;
     this.terrain = terrain;
     this.shared = shared;
     this.norm = norm;
+    this.field = field;
 
     roads.forEach((road, roadIndex) => {
       for (let i = 0; i < road.points.length - 1; i++) {
@@ -168,10 +181,7 @@ export class RoadIndex {
     const vx = seg.bx - seg.ax;
     const vz = seg.bz - seg.az;
     const len = Math.hypot(vx, vz) || 1;
-    const profile = this.profileFor(seg.road);
-    const crown = profile[seg.at] + (profile[seg.at + 1] - profile[seg.at]) * bestT;
     const section = this.sectionFor(seg.road);
-    const built = gradedHalfWidth(section);
     const full = sectionHalfWidth(section);
 
     // The height of whatever part of the street this point is over — channel,
@@ -179,15 +189,11 @@ export class RoadIndex {
     // the ground the embankment lands on. Without that last piece the car
     // stands on the drawn earthwork until it crosses the pavement's back edge
     // and then drops the height of the embankment in one step.
-    let surfaceY: number;
-    if (bestDist <= built) {
-      surfaceY = crown + sectionHeightAt(section, bestDist);
-    } else {
-      const inner = crown + sectionHeightAt(section, built);
-      const outer = this.terrain.heightAt(x, z);
-      const t = full > built ? Math.min(1, (bestDist - built) / (full - built)) : 1;
-      surfaceY = inner + (outer - inner) * t;
-    }
+    // What was really built here, cell by cell. It is the quad the renderer
+    // drew, so the wheels and the picture cannot disagree — which they did,
+    // for as long as this index worked the answer out for itself.
+    const placed = this.field?.sample(x, z);
+    const surfaceY = placed ? placed.y : this.sweptHeightAt(seg, bestT, bestDist, x, z);
 
     return {
       road: this.roads[seg.road],
@@ -197,6 +203,30 @@ export class RoadIndex {
       surfaceY,
       streetHalfWidth: full,
     };
+  }
+
+  /**
+   * The old answer: sweep the cross-section along the way and read off the
+   * height. Kept for the ways the parts layer does not place — anything
+   * outside the network, and any city built before this index was given a
+   * field to read.
+   */
+  private sweptHeightAt(
+    seg: Segment, t: number, dist: number, x: number, z: number,
+  ): number {
+    const profile = this.profileFor(seg.road);
+    const crown = profile[seg.at] + (profile[seg.at + 1] - profile[seg.at]) * t;
+    const section = this.sectionFor(seg.road);
+    const built = gradedHalfWidth(section);
+    const full = sectionHalfWidth(section);
+    if (dist <= built) return crown + sectionHeightAt(section, dist);
+    // Across the embankment, a ramp down to the ground it lands on. Without
+    // that last piece the car stands on the drawn earthwork until it crosses
+    // the pavement's back edge and then drops the height of it in one step.
+    const inner = crown + sectionHeightAt(section, built);
+    const outer = this.terrain.heightAt(x, z);
+    const k = full > built ? Math.min(1, (dist - built) / (full - built)) : 1;
+    return inner + (outer - inner) * k;
   }
 
   private sectionFor(roadIndex: number): StreetEdge[] {

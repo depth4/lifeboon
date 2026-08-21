@@ -23,10 +23,11 @@ import { readFileSync } from 'node:fs';
 import { fromFixture, type Fixture } from '../src/data/fixture';
 import { Heightfield } from '../src/terrain/heightfield';
 import { carveWaterways } from '../src/terrain/elevation';
-import { RoadProfiles } from '../src/world/roadprofile';
-import { gradedHalfWidth, sectionHeightAt, streetSection } from '../src/world/street';
-import { junctionHeightAt } from '../src/world/junctions';
 import { RoadNetwork } from '../src/world/network';
+import { placeNetwork } from '../src/world/parts/place';
+import { corridorsFrom, padsFrom } from '../src/world/parts/earth';
+import { PartField } from '../src/world/partfield';
+import { affords, Can, ROLE_NAMES, type Role } from '../src/world/parts';
 import { groundGrid, shoulderFor, stretch } from '../src/render/groundgrid';
 import { GRADING_GRID_M } from '../src/world/roadprofile';
 import type { Vec2 } from '../src/world/types';
@@ -61,14 +62,18 @@ const shoulder = shoulderFor(grid.spacing);
 // a surface the app never had.
 const water = carveWaterways(world.terrain, world.areas, world.waterways);
 void water;
-const profiles = new RoadProfiles(world.roads, world.terrain);
-world.terrain.gradeStreets(profiles.corridors(world.roads, world.norm), shoulder);
-world.terrain.gradePads(profiles.pads());
+// The same order `installWorld` uses: network, then parts, then the earth is
+// cut to what the parts decided. Measuring against anything else would be
+// measuring a city the app does not build.
+const net = RoadNetwork.build(world.roads);
+const placed = placeNetwork(net, world.roads, world.terrain, world.norm);
+const field = new PartField(placed.parts);
+world.terrain.gradeStreets(corridorsFrom(placed, world.norm), shoulder);
+world.terrain.gradePads(padsFrom(placed));
 
 console.log(`  mesh cells ${grid.spacing.toFixed(2)} m · shoulder ${shoulder.toFixed(1)} m`);
 
 /* ------------------------------------------------------------ the network */
-const net = RoadNetwork.build(world.roads);
 const turnKinds = new Map<string, number>();
 for (const t of net.turns) turnKinds.set(t.kind, (turnKinds.get(t.kind) ?? 0) + 1);
 let parkingKm = 0;
@@ -89,8 +94,11 @@ console.log(`  network: ${net.nodes.length} nodes, ${net.edges.length} edges, `
   + `(${[...turnKinds].map(([k, n]) => `${n} ${k}`).join(', ')})`);
 console.log(`  crossroads ${arms.get(4) ?? 0}, T-junctions ${arms.get(3) ?? 0}, `
   + `dead ends ${arms.get(1) ?? 0} · kerbside parking ${parkingKm.toFixed(1)} km`);
-console.log(`  junctions ${profiles.junctions.length}, approaches `
-  + `${profiles.junctions.reduce((n, j) => n + j.approaches.length, 0)}`);
+const junctionParts = placed.parts.filter((p) => p.kind === 'junction');
+console.log(`  parts ${placed.parts.length} `
+  + `(${placed.parts.filter((p) => p.kind === 'street').length} street, `
+  + `${placed.parts.filter((p) => p.kind === 'path').length} path, `
+  + `${junctionParts.length} junction) · ${field.cellCount} cells`);
 
 /* --------------------------------------------- the mesh, as it would build */
 const verts = grid.cells + 1;
@@ -126,55 +134,42 @@ const meshAt = (x: number, z: number): number => {
 };
 
 /* ------------------------------------------- ground against what is drawn */
+//
+// Sampled from the parts themselves rather than re-swept from the ways: the
+// cell whose height is compared with the ground is the very quad the renderer
+// draws, so this cannot be measuring a surface the city does not have.
 const straight: number[] = [];
 const crossing: number[] = [];
 const outside: number[] = [];
-let worstAt: { x: number; z: number; gap: number; road: string } | null = null;
-for (const road of world.roads) {
-  if (road.bridge || road.points.length < 2) continue;
-  const levels = profiles.get(road);
-  if (!levels) continue;
-  const section = streetSection(road, world.norm);
-  const half = gradedHalfWidth(section);
+let worstAt: { x: number; z: number; gap: number; part: string } | null = null;
 
-  for (let i = 0; i < road.points.length - 1; i++) {
-    const [ax, az] = road.points[i];
-    const [bx, bz] = road.points[i + 1];
-    const len = Math.hypot(bx - ax, bz - az);
-    if (len < 1e-6) continue;
-    const nx = (bz - az) / len;
-    const nz = -(bx - ax) / len;
-    const steps = Math.max(1, Math.round(len / 3));
-
-    for (let s = 0; s <= steps; s++) {
-      const t = s / steps;
-      const cx = ax + (bx - ax) * t;
-      const cz = az + (bz - az) * t;
-      const crown = levels[i] + (levels[i + 1] - levels[i]) * t;
-
-      const junction = profiles.junctions.find(
-        (j) => Math.hypot(cx - j.x, cz - j.z) < j.radius);
-
-      for (let d = -half; d <= half + 1e-6; d += 0.5) {
-        const x = cx + nx * d;
-        const z = cz + nz * d;
-        const ground = meshAt(x, z);
-        if (!Number.isFinite(ground)) continue;
-        const drawn = junction
-          ? junctionHeightAt(junction, x, z)
-          : crown + sectionHeightAt(section, d);
-        const gap = ground - drawn;
-        // Past the loaded radius the ground mesh stops being a mesh of the
-        // data and becomes a stretched skirt running to the horizon, with
-        // cells hundreds of metres across. Ways run out there — OSM returns
-        // whole ways — so those samples are counted apart rather than blamed
-        // on the grading.
-        const inCore = Math.abs(x) <= world.radius && Math.abs(z) <= world.radius;
-        if (!inCore) outside.push(gap);
-        else (junction ? crossing : straight).push(gap);
-        if (inCore && (!worstAt || gap > worstAt.gap)) {
-          worstAt = { x, z, gap, road: road.id };
-        }
+for (const part of placed.parts) {
+  if (part.elevated) continue;
+  const { rows, cols, x, y, z, cell } = part.lattice;
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      const role = cell[r * (cols - 1) + c] as Role;
+      // Only where somebody stands or drives. The embankment is *meant* to
+      // meet the ground — that is what an embankment is.
+      if (!(affords(role) & (Can.Drive | Can.Walk))) continue;
+      const i0 = r * cols + c;
+      const i2 = i0 + cols + 1;
+      const px = (x[i0] + x[i2]) / 2;
+      const pz = (z[i0] + z[i2]) / 2;
+      const drawn = (y[i0] + y[i2]) / 2;
+      const ground = meshAt(px, pz);
+      if (!Number.isFinite(ground)) continue;
+      const gap = ground - drawn;
+      // Past the loaded radius the ground mesh stops being a mesh of the data
+      // and becomes a stretched skirt running to the horizon, with cells
+      // hundreds of metres across. Ways run out there — OSM returns whole
+      // ways — so those samples are counted apart rather than blamed on the
+      // grading.
+      const inCore = Math.abs(px) <= world.radius && Math.abs(pz) <= world.radius;
+      if (!inCore) outside.push(gap);
+      else (part.kind === 'junction' ? crossing : straight).push(gap);
+      if (inCore && (!worstAt || gap > worstAt.gap)) {
+        worstAt = { x: px, z: pz, gap, part: part.id };
       }
     }
   }
@@ -198,8 +193,66 @@ report('at a crossing      ', crossing);
 report('past the loaded edge', outside);
 if (worstAt) {
   console.log(`  worst inside the loaded area: ${(worstAt.gap * 100).toFixed(0)} cm `
-    + `at (${worstAt.x.toFixed(0)}, ${worstAt.z.toFixed(0)}) on way ${worstAt.road}`);
+    + `at (${worstAt.x.toFixed(0)}, ${worstAt.z.toFixed(0)}) on ${worstAt.part}`);
 }
+
+/* ------------------------------------------------- do the parts fit together */
+{
+  let samples = 0;
+  let sum = 0;
+  let worst = 0;
+  for (const [node, ports] of placed.portsByNode) {
+    if (!junctionParts.some((p) => p.node === node)) continue;
+    for (const port of ports) {
+      const nx = port.dir[1];
+      const nz = -port.dir[0];
+      for (let t = -0.8; t <= 0.8; t += 0.4) {
+        const bx = port.at[0] + nx * port.half * t;
+        const bz = port.at[1] + nz * port.half * t;
+        const a = field.sample(bx - port.dir[0] * 0.02, bz - port.dir[1] * 0.02);
+        const b = field.sample(bx + port.dir[0] * 0.02, bz + port.dir[1] * 0.02);
+        if (!a || !b || !(a.can & Can.Drive) || !(b.can & Can.Drive)) continue;
+        const gap = Math.abs(a.y - b.y);
+        samples++;
+        sum += gap;
+        worst = Math.max(worst, gap);
+      }
+    }
+  }
+  console.log('');
+  console.log(`  junction mouths: ${samples} sampled, mean step `
+    + `${((sum / Math.max(1, samples)) * 100).toFixed(2)} cm, `
+    + `worst ${(worst * 100).toFixed(1)} cm`);
+
+  let covered = 0;
+  let stacked = 0;
+  let doubled = 0;
+  const pairs = new Map<string, number>();
+  for (let i = 0; i < 200000; i++) {
+    const px = (Math.random() * 2 - 1) * world.radius;
+    const pz = (Math.random() * 2 - 1) * world.radius;
+    const hits = field.sampleAll(px, pz);
+    if (!hits.length) continue;
+    covered++;
+    const paved = hits.filter((h) => (h.can & Can.Paved) !== 0);
+    if (paved.length < 2) continue;
+    // A deck over a street is two surfaces on purpose. Everything else is two
+    // things fighting for the same square metre.
+    if (paved[0].y - paved[paved.length - 1].y > 2) {
+      stacked++;
+      continue;
+    }
+    doubled++;
+    const key = [...new Set(paved.map((h) => ROLE_NAMES[h.role]))].sort().join(' + ');
+    pairs.set(key, (pairs.get(key) ?? 0) + 1);
+  }
+  console.log(`  paved surface claimed twice: ${((100 * doubled) / covered).toFixed(3)}% `
+    + `of ${covered} samples (a further ${((100 * stacked) / covered).toFixed(2)}% is `
+    + 'a deck stacked over a street, which is right)');
+  [...pairs].sort((a, b) => b[1] - a[1]).slice(0, 5).forEach(([k, n]) =>
+    console.log(`    ${k.padEnd(30)} ${((100 * n) / covered).toFixed(3)}%`));
+}
+
 
 /** Every way's extent, so the terrain is grown to cover them as the app does. */
 function streetBounds(): { minX: number; maxX: number; minZ: number; maxZ: number } | undefined {

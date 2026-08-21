@@ -3,6 +3,14 @@
 **Repository (public):** https://github.com/depth4/lifeboon
 **Branch:** `claude/world-map-life-simulator-wthhom` (this is the project; there is no `main`)
 
+> **Status, 2026-08-21.** The first panel's central finding — that the renderer
+> derived geometry from OpenStreetMap ways at draw time, and that ground
+> ownership had four incompatible representations — has been acted on.
+> `render/roads.ts` and `render/claims.ts` are deleted; the world is now built
+> out of **parts** (`docs/PARTS.md`), functional units that own the ground they
+> stand on cell by cell. Read `docs/PARTS.md` alongside this file: the sections
+> below describing the road renderer are history, kept because they are why.
+
 You are being asked to review an architecture, not to fix a bug. The person who
 owns this project is not a programmer; they have been building it with an AI
 coding agent for about a week, and the same class of defect keeps coming back

@@ -191,12 +191,23 @@ function weldNodes(roads: Road[], net: RoadNetwork): Map<string, number> {
 
   roads.forEach((road, index) => {
     if (road.points.length < 2) return;
+    // A deck passes over the street it crosses; it does not meet it. Welded
+    // anyway, the two become one node, a junction is built where a bridge
+    // flies over a road, and the earth is raised ten metres to carry a
+    // crossing that does not exist — measured, once, under one deck.
+    //
+    // The rule is about *interior* points, and that is the whole subtlety: a
+    // bridge is a bridge along its whole length, but its abutments genuinely
+    // do join the road it continues into, and they are its two ends.
+    const passing = road.bridge || road.tunnel || road.layer !== 0;
     road.points.forEach((p, i) => {
+      const end = i === 0 || i === road.points.length - 1;
+      if (passing && !end) return;
       const k = cellKey(p[0], p[1]);
       let set = touching.get(k);
       if (!set) touching.set(k, (set = new Set()));
       set.add(index);
-      if (i === 0 || i === road.points.length - 1) ends.add(k);
+      if (end) ends.add(k);
     });
   });
 
