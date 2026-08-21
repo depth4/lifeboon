@@ -1,0 +1,109 @@
+# Как отдать это другой нейронке
+
+Три файла в этой папке:
+
+| Файл | Что это | Кому давать |
+|---|---|---|
+| `BRIEF.md` | 13 КБ. Что за проект, что сломано, с цифрами, что уже пробовали, и восемь вопросов | **Всем.** Этого одного хватает для разбора архитектуры |
+| `CORE-CODE.md` | 233 КБ. Двенадцать ключевых файлов исходника подряд | Тем, кто умеет читать много текста: Gemini, GPT-5, Claude |
+| `lifeboon-source.zip` | Весь исходник, тесты и документация | Если модель принимает архив или умеет клонировать |
+
+Репозиторий публичный: **https://github.com/depth4/lifeboon**
+(ветка `claude/world-map-life-simulator-wthhom`, никакого `main` нет).
+Моделям с доступом в интернет достаточно ссылки плюс `BRIEF.md`.
+
+**Порядок действий:** приложить `BRIEF.md` (и `CORE-CODE.md`, если берёт),
+вставить один из промптов ниже. Ответы разных моделей потом можно принести
+обратно — их полезно сравнить между собой, они часто расходятся именно там,
+где вопрос действительно сложный.
+
+---
+
+## Промпт по-русски
+
+> Я делаю браузерный симулятор жизни на настоящих данных OpenStreetMap:
+> реальный город в 3D, рельеф из настоящих высот, по улицам можно ездить на
+> машине. TypeScript + Three.js, без игрового движка, ~15 500 строк.
+>
+> У меня неделю подряд возвращается один и тот же класс багов: земля торчит
+> сквозь дороги, тротуары дублируются, перекрёстки выходят отдельными плато,
+> дорожные поверхности накладываются друг на друга. Каждый раз это чинят, и
+> каждый раз оно возвращается в другом месте. Я подозреваю, что дело не в
+> багах, а в архитектуре.
+>
+> В приложенном файле — подробный разбор: что построено, что сломано с
+> измеренными цифрами, что уже пробовали и что не сработало, и восемь
+> вопросов в конце.
+>
+> Посмотри и скажи прямо: **что здесь сделано структурно неправильно и какой
+> должна быть правильная форма.** Меня не надо щадить и не надо соглашаться
+> из вежливости — если предложенное направление (раздел 5) ошибочно, скажи
+> почему.
+>
+> Что мне нужно от ответа:
+> 1. Один абзац: в чём корень проблемы, по-твоему.
+> 2. Ответы на вопросы из раздела 6, начиная с первого — он про то, каким
+>    должно быть представление рельефа, чтобы улица в него честно врезалась.
+> 3. Конкретика: название приёма, статьи, библиотеки или игры, которая так
+>    делает, и чего это стоит по производительности и по объёму переделки.
+> 4. Если что-то в разборе кажется тебе неверно измеренным или неверно
+>    понятым — скажи об этом первым делом.
+>
+> Общих советов вроде «разделяйте ответственности» и «пишите больше тестов»
+> не надо: тестов 138 и есть измерительный стенд, цифры выше получены им.
+
+## The same, in English
+
+> I am building a browser life simulator on real OpenStreetMap data: a real
+> town in 3D, terrain from real elevation tiles, drivable streets. TypeScript
+> + Three.js, no game engine, ~15 500 lines.
+>
+> For a week the same class of defect keeps coming back: ground poking through
+> roads, doubled pavements, junctions as isolated plateaux, road surfaces
+> overlapping each other. Each one gets fixed and reappears somewhere else. I
+> suspect the problem is architectural, not a sequence of bugs.
+>
+> The attached brief covers what is built, what is broken with measured
+> numbers, what has already been tried and failed, and eight questions.
+>
+> Tell me plainly **what is structurally wrong here and what the right shape
+> would be.** Do not agree out of politeness — if the direction proposed in
+> §5 is wrong, say why.
+>
+> What I want back:
+> 1. One paragraph: the root cause as you see it.
+> 2. Answers to §6, starting with question 1 — the right terrain
+>    representation for streets that genuinely cut into relief.
+> 3. Specifics: name the technique, paper, library or game that does it, and
+>    what it costs in performance and in rewrite size.
+> 4. If anything in the brief looks mis-measured or misunderstood to you, say
+>    that first.
+>
+> Skip generic advice ("separate concerns", "write more tests"): there are 138
+> checks and a measurement harness, and it produced the numbers above.
+
+---
+
+## Если модель умеет клонировать репозиторий
+
+> Склонируй https://github.com/depth4/lifeboon (ветка
+> `claude/world-map-life-simulator-wthhom`). Прочитай `review/BRIEF.md`,
+> потом `docs/STATE.md`, потом `src/render/roads.ts`,
+> `src/terrain/heightfield.ts` и `src/world/network.ts`.
+>
+> Дальше — как в промпте выше.
+
+## Если модель не принимает файлы
+
+Открыть `BRIEF.md`, скопировать целиком в сообщение, добавить промпт сверху.
+13 КБ — влезает в любое окно.
+
+---
+
+## Что стоит спросить дополнительно, если ответ окажется толковым
+
+- «Напиши псевдокод той структуры, которую предлагаешь, для операции
+  "положить дорогу": что она делает с сетью, с рельефом и с землёй.»
+- «Раздели свой план на шаги так, чтобы после каждого шага было что
+  показать на экране.»
+- «Что из существующего кода твой план выбрасывает, а что оставляет?»

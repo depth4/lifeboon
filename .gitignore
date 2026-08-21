@@ -6,3 +6,5 @@ dist-ssr/
 .DS_Store
 .vite/
 *.log
+review/CORE-CODE.md
+review/lifeboon-source.zip
