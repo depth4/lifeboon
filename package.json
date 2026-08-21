@@ -14,9 +14,12 @@
     "map": "esbuild tests/map.ts --bundle --platform=node --format=esm --outfile=.tmp/map.mjs --log-level=error && node .tmp/map.mjs"
   },
   "dependencies": {
+    "earcut": "^3.2.3",
+    "polygon-clipping": "^0.15.7",
     "three": "^0.185.1"
   },
   "devDependencies": {
+    "@types/earcut": "^3.0.0",
     "@types/three": "^0.185.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.3"
