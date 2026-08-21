@@ -23,6 +23,7 @@ import { RoadNetwork } from '../src/world/network';
 import { PartField } from '../src/world/partfield';
 import { affords, Can, Role, ROLE_NAMES } from '../src/world/parts';
 import { placeNetwork } from '../src/world/parts/place';
+import { plantTrees, type TreeSpot } from '../src/world/parts/trees';
 import { NORM_RU } from '../src/world/street';
 import type { Road, Vec2 } from '../src/world/types';
 
@@ -218,6 +219,33 @@ console.log('--- what may be done where ---');
     check(`${ROLE_NAMES[role]}: what it affords`,
       (can & must) === must && (can & mustNot) === 0, can);
   }
+}
+
+/* ------------------------------------------------------------ street trees */
+
+console.log('--- trees in the verge ---');
+{
+  const spots: TreeSpot[] = [];
+  for (const part of placed.parts) {
+    const { rows, cols, x, z } = part.lattice;
+    const along = new Float64Array(rows);
+    for (let r = 1; r < rows; r++) {
+      const a = r * cols;
+      const b = (r - 1) * cols;
+      along[r] = along[r - 1] + Math.hypot(x[a] - x[b], z[a] - z[b]);
+    }
+    plantTrees(part, along, spots);
+  }
+  const km = net.edges.reduce((sum, e) => sum + e.length, 0) / 1000;
+  const perTree = (km * 1000) / Math.max(1, spots.length);
+  console.log(`  ${spots.length} trees on ${km.toFixed(1)} km of street `
+    + `= one per ${perTree.toFixed(1)} m`);
+  // An instanced canopy costs its triangle count once per tree, so this is a
+  // budget and not a taste: planting both sides of every street at a fixed
+  // interval doubled it and made the planting read as wallpaper.
+  check('trees are planted, but not as an avenue', perTree > 14 && perTree < 40, perTree);
+  check('and every one of them stands somewhere', spots.every((s) =>
+    Number.isFinite(s.x) && Number.isFinite(s.z) && s.scale > 0));
 }
 
 /* ------------------------------------------------------- a lone T junction */

@@ -21,6 +21,7 @@
 
 import * as THREE from 'three';
 import { affords, Can, Role, type Part } from '../world/parts';
+import { plantTrees } from '../world/parts/trees';
 import type { RoadClass } from '../world/types';
 import type { OcclusionField } from './occlusion';
 import type { StreetMask } from './streetmask';
@@ -220,24 +221,12 @@ export function buildPartMeshes(
         const order = up < 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2];
         for (const k of order) push(k);
 
-        // A street tree every dozen-odd metres of verge, spaced by real
-        // distance rather than by lattice row: rows are as far apart as eight
-        // metres on a straight and centimetres round a bend, and counting rows
-        // plants an avenue on one and a thicket on the other.
-        if (role === Role.Verge && width > 1.2
-          && Math.floor(along[r] / TREE_SPACING_M)
-            !== Math.floor(along[r + 1] / TREE_SPACING_M)) {
-          treeSpots.push({
-            x: (x[i0] + x[i2]) / 2,
-            z: (z[i0] + z[i2]) / 2,
-            scale: 0.8 + ((r * 13 + c * 7) % 40) / 100,
-          });
-        }
         across += step;
       }
     }
 
     markings(part, along, paint);
+    plantTrees(part, along, treeSpots);
   }
 
   const asphalt = asphaltTexture();
@@ -324,9 +313,6 @@ export function buildPartMeshes(
   };
 }
 
-/** How far apart street trees stand along a verge. */
-const TREE_SPACING_M = 15;
-
 /** Half the width of a painted line, in metres. */
 const PAINT_HALF = 0.06;
 const CENTRE_PAINT = new THREE.Color(0xd8d2c4);
@@ -383,3 +369,4 @@ function markings(part: Part, along: Float64Array, out: Buffers): void {
     }
   }
 }
+
