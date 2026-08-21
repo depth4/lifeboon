@@ -159,10 +159,11 @@ and the city came out as floating slabs.
 - Terrain tiles (`s3.amazonaws.com/elevation-tiles-prod`) work from Node but
   not from sandboxed Chromium. Proxy them via a Playwright route handler.
 - Chromium: `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, launch with
-  `--use-gl=swiftshader --enable-unsafe-swiftshader --no-sandbox`.
-  It renders at well under 1 fps. **Do not measure simulation behaviour by
-  wall-clock time in that browser** — step the simulation by hand from
-  `page.evaluate` instead. This cost a whole debugging detour once.
+  `--use-gl=swiftshader --enable-unsafe-swiftshader --no-sandbox`. It renders
+  the offline city at 11-18 fps — slow, not hopeless. **Do not measure
+  simulation behaviour by wall-clock time in that browser** — step the
+  simulation by hand from `page.evaluate` instead. This cost a whole debugging
+  detour once.
   **SwiftShader draws no shadows at all.** Everything is configured and the
   shadow map is allocated; nothing appears. Judging shadow work from a
   sandbox screenshot is impossible — check the triangle counts and the light
@@ -196,6 +197,12 @@ Drive them from Playwright, waiting ~9 s per frame (SwiftShader is that slow).
 - **What is the range of this noise?** Bundle the module with esbuild and run it
   in Node over 200 k samples. `fbm` turned out to have a standard deviation of
   0.275, not 1 — which is why the quantised field parcels came out invisible.
+- **What is actually laid out here?** `npm run map` draws every cell of every
+  placed part in plan, from Node, in a second — no browser, no GPU. It is the
+  view the user asks for when they say *"соединять как пути видом сверху"*, and
+  it catches paving where grass should be, a junction not joined to its
+  streets, or a corner that folds, in one glance. `npm run map -- 90 -180 -90`
+  zooms: span, then centre.
 - **What does a real town measure?** `npm run place -- capture.json.gz`, on a
   file the user exported from the running site. It found, within a minute of
   existing, that a bridge was being treated as a junction with the street it
@@ -216,6 +223,8 @@ npm run dev        # vite dev server
 npm run build      # tsc --noEmit && vite build
 npm test           # 100+ checks: OSM parsing, vehicle physics, driving, ground
 npm run place -- f # measure a capture the user exported from the site
+npm run map        # draw the placed parts in plan, from Node -> .tmp/plan.png
+npm run map -- 90 -180 -90   # span in metres, then the centre to look at
 npx vite preview --port 4173 --host 127.0.0.1
 ```
 
