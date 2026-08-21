@@ -1,0 +1,27 @@
+{
+  "name": "lifeboon",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser life simulator built on real-world OpenStreetMap data: 3D city, real streets, simulated inhabitants.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "esbuild tests/parse-osm.ts --bundle --platform=node --format=esm --outfile=.tmp/parse-osm.mjs --log-level=error && node .tmp/parse-osm.mjs && esbuild tests/vehicle-physics.ts --bundle --platform=node --format=esm --outfile=.tmp/vehicle-physics.mjs --log-level=error && node .tmp/vehicle-physics.mjs && esbuild tests/driving.ts --bundle --platform=node --format=esm --outfile=.tmp/driving.mjs --log-level=error && node .tmp/driving.mjs && esbuild tests/ground.ts --bundle --platform=node --format=esm --outfile=.tmp/ground.mjs --log-level=error && node .tmp/ground.mjs && esbuild tests/network.ts --bundle --platform=node --format=esm --outfile=.tmp/network.mjs --log-level=error && node .tmp/network.mjs && esbuild tests/parts.ts --bundle --platform=node --format=esm --outfile=.tmp/parts.mjs --log-level=error && node .tmp/parts.mjs",
+    "place": "esbuild tests/place.ts --bundle --platform=node --format=esm --outfile=.tmp/place.mjs --log-level=error && node .tmp/place.mjs",
+    "map": "esbuild tests/map.ts --bundle --platform=node --format=esm --outfile=.tmp/map.mjs --log-level=error && node .tmp/map.mjs"
+  },
+  "dependencies": {
+    "earcut": "^3.2.3",
+    "polygon-clipping": "^0.15.7",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/earcut": "^3.0.0",
+    "@types/three": "^0.185.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}

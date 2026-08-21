@@ -2,236 +2,29 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <title>Lifeboon — a life simulator on the real world map</title>
-    <meta
-      name="description"
-      content="A browser life simulator built on OpenStreetMap data: real streets and buildings in 3D, with simulated inhabitants going about their day."
-    />
-    <link rel="stylesheet" href="/src/ui/style.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lifeboon — built one mechanic at a time</title>
+    <style>
+      :root { color-scheme: light dark; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #bfd0dc; }
+      #viewport { display: block; width: 100%; height: 100%; touch-action: none; }
+      .bar {
+        position: fixed; left: 0; right: 0; bottom: 0;
+        display: flex; gap: 1rem; align-items: center; justify-content: space-between;
+        padding: 0.6rem 1rem;
+        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #22262b; background: rgba(255,255,255,0.82);
+        backdrop-filter: blur(6px);
+      }
+      .bar a { color: #22262b; }
+    </style>
   </head>
   <body>
     <canvas id="viewport"></canvas>
-
-    <!-- Loading / status -->
-    <div id="loader" class="loader">
-      <div class="loader-card">
-        <h1 class="loader-title">Lifeboon</h1>
-        <p class="loader-sub">A life simulator on the real world map</p>
-        <div class="loader-bar"><div class="loader-bar-fill" id="loader-fill"></div></div>
-        <p class="loader-status" id="loader-status">Starting…</p>
-        <p class="loader-error" id="loader-error" hidden></p>
-      </div>
+    <div class="bar">
+      <span id="caption">Loading…</span>
+      <a href="./frozen/">the old city →</a>
     </div>
-
-    <!-- Top bar: where are we, and how do we get somewhere else -->
-    <header class="panel panel-top" id="top-bar">
-      <div class="place">
-        <span class="place-name" id="place-name">—</span>
-        <span class="badge" id="source-badge">—</span>
-        <!--
-          The build stamp lives here, in plain sight, and not only inside the
-          About panel where it was. A stale cache and a fix that did not work
-          look exactly alike, and the only way to tell them apart is to read
-          which build is running — so it has to be readable without opening
-          anything.
-        -->
-        <span class="build-tag" id="build-tag" title="Running build">—</span>
-      </div>
-      <form class="search" id="search-form" autocomplete="off">
-        <input
-          id="search-input"
-          class="search-input"
-          type="text"
-          placeholder="Load a place — e.g. Lisbon, Alfama"
-          aria-label="Place to load"
-        />
-        <select id="radius-select" class="search-radius" aria-label="Area size">
-          <option value="500" selected>1 km across</option>
-          <option value="750">1.5 km across</option>
-          <option value="1100">2.2 km across</option>
-          <option value="1500">3 km across</option>
-        </select>
-        <button type="submit" class="btn btn-primary" id="search-btn">Load</button>
-      </form>
-      <div class="search-results" id="search-results" hidden></div>
-    </header>
-
-    <!-- Clock and speed -->
-    <section class="panel panel-clock" id="clock-panel">
-      <div class="clock-time" id="clock-time">07:00</div>
-      <div class="clock-day" id="clock-day">Mon · day 1</div>
-      <div class="speeds" id="speeds" role="group" aria-label="Simulation speed">
-        <button class="chip" data-speed="0" title="Pause">❚❚</button>
-        <button class="chip" data-speed="1">1×</button>
-        <button class="chip is-active" data-speed="10">10×</button>
-        <button class="chip" data-speed="60">60×</button>
-        <button class="chip" data-speed="300">300×</button>
-      </div>
-    </section>
-
-    <!-- Camera modes and view stats -->
-    <section class="panel panel-view" id="view-panel">
-      <div class="modes" role="group" aria-label="Camera mode">
-        <button class="chip is-active" data-mode="orbit">Orbit</button>
-        <button class="chip" data-mode="walk">Walk</button>
-        <button class="chip" data-mode="drive" id="drive-btn" disabled>Drive</button>
-        <button class="chip" data-mode="follow" id="follow-btn" disabled>Follow</button>
-      </div>
-      <dl class="stats" id="stats">
-        <div><dt>Altitude</dt><dd id="stat-altitude">—</dd></div>
-        <div><dt>People outdoors</dt><dd id="stat-outdoors">—</dd></div>
-        <div><dt>Population</dt><dd id="stat-population">—</dd></div>
-        <div><dt>Buildings</dt><dd id="stat-buildings">—</dd></div>
-        <div><dt>Streets</dt><dd id="stat-roads">—</dd></div>
-        <div><dt>FPS</dt><dd id="stat-fps">—</dd></div>
-      </dl>
-    </section>
-
-    <!-- Dashboard, only while driving -->
-    <section class="panel panel-drive" id="drive-panel" hidden>
-      <div class="drive-top">
-        <div class="drive-speed">
-          <span id="drive-kmh">0</span><small>km/h</small>
-        </div>
-        <div class="drive-gear" id="drive-gear">1</div>
-      </div>
-      <div class="rev" aria-hidden="true">
-        <div class="rev-fill" id="drive-rev"></div>
-        <div class="rev-redline"></div>
-      </div>
-      <div class="drive-meta">
-        <span id="drive-where">—</span>
-        <span id="drive-flags" class="drive-flags"></span>
-      </div>
-      <p class="drive-keys">
-        <kbd>W</kbd><kbd>S</kbd> throttle &amp; brake · <kbd>A</kbd><kbd>D</kbd> steer ·
-        <kbd>R</kbd> reverse · <kbd>Space</kbd> handbrake · <kbd>Esc</kbd> get out
-      </p>
-    </section>
-
-    <!-- Inspector -->
-    <aside class="panel panel-inspector" id="inspector" hidden>
-      <button class="inspector-close" id="inspector-close" aria-label="Close">×</button>
-      <div id="inspector-body"></div>
-    </aside>
-
-    <!-- Attribution and the honest small print -->
-    <footer class="attribution" id="attribution">
-      <span id="attrib-text">—</span>
-      <button class="link-btn" id="about-btn">Controls &amp; data quality</button>
-    </footer>
-
-    <!-- About dialog -->
-    <div class="modal" id="about-modal" hidden>
-      <div class="modal-card">
-        <button class="inspector-close" id="about-close" aria-label="Close">×</button>
-        <h2>Lifeboon</h2>
-        <p>
-          A city-scale life simulator that runs on real map data. Streets, building
-          footprints, heights, parks and water come from
-          <strong>OpenStreetMap</strong>; the people, their jobs and their days are
-          simulated on top of that geometry.
-        </p>
-
-        <h3>Controls</h3>
-        <ul class="keys">
-          <li><kbd>Drag</kbd> orbit · <kbd>Right-drag</kbd> or <kbd>Shift+drag</kbd> pan</li>
-          <li><kbd>Wheel</kbd> zoom — continuous from 3 km up to eye level</li>
-          <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Shift</kbd> faster</li>
-          <li><kbd>Click</kbd> a person to inspect them, then <kbd>Follow</kbd></li>
-          <li><kbd>Click</kbd> a building for what the map says about it</li>
-          <li><kbd>Drive</kbd> puts a car on the nearest street below you</li>
-        </ul>
-
-        <h3>Driving</h3>
-        <ul class="keys">
-          <li><kbd>W</kbd> accelerate · <kbd>S</kbd> brake, then reverse · <kbd>A</kbd><kbd>D</kbd> steer</li>
-          <li><kbd>R</kbd> reverse gear · <kbd>Space</kbd> handbrake · <kbd>Esc</kbd> get out</li>
-          <li><kbd>Drag</kbd> look around · <kbd>Wheel</kbd> move the camera in or out</li>
-        </ul>
-        <p class="fineprint">
-          The car is simulated from a published specification: mass, power,
-          torque, gear ratios, final drive, drag and rolling resistance. It
-          accelerates, changes gear, struggles on hills and stops in the
-          distance those numbers imply, and it loses grip in a corner when the
-          speed asks for more than the tyres can give. It does not yet slide,
-          have suspension, or hit anything except a building wall — and there
-          is no other traffic to hit.
-        </p>
-
-        <h3>What is deliberately not here</h3>
-        <ul class="keys">
-          <li><strong>No interiors.</strong> Buildings are closed shells. When somebody
-              is at home or at work they are simply not drawn.</li>
-          <li><strong>No brands.</strong> Shop, cafe and business names are discarded on
-              import; only the category is kept, so a cafe is "a cafe".</li>
-          <li><strong>No real people.</strong> Inhabitants are invented and statistical.
-              Nothing is tied to who actually lives at an address.</li>
-        </ul>
-
-        <h3>What the map actually contains</h3>
-        <p class="fineprint">
-          Coverage in OpenStreetMap is uneven, and the simulation should not
-          pretend otherwise. This is what was found for the loaded area — and
-          what had to be guessed.
-        </p>
-        <div id="about-audit"></div>
-
-        <h3>Send this place to the developer</h3>
-        <p class="fineprint">
-          Overpass cannot be reached from the sandbox this is built in, so a
-          real town can only be tested if it is carried there by hand. This
-          saves the loaded area — streets, buildings, land cover and the
-          terrain under them — as one file you can attach to a message. Load
-          one back to see exactly what somebody else was looking at.
-        </p>
-        <p class="capture-row">
-          <button class="btn" id="export-place">Save this place</button>
-          <button class="btn" id="import-place">Load a saved place</button>
-          <input type="file" id="import-file" accept=".json,.gz,application/json,application/gzip" hidden>
-        </p>
-        <p class="fineprint" id="capture-status"></p>
-
-        <h3>This build</h3>
-        <p class="fineprint">
-          If a fix does not seem to have arrived, check this against what was
-          last pushed, then reload with Ctrl+Shift+R.
-        </p>
-        <p class="fineprint"><code id="about-build">—</code></p>
-
-        <h3>Data</h3>
-        <p class="fineprint" id="about-attrib"></p>
-        <p class="fineprint">
-          Map data © OpenStreetMap contributors, available under the Open Database
-          License. Geocoding by Nominatim. Both are volunteer-run services — this app
-          caches results locally and asks for one area at a time.
-        </p>
-        <!--
-          Every source behind the terrain tiles requires attribution. None of
-          them restricts commercial use or redistribution, but the credit is a
-          condition of the licence and it was missing: the app named
-          OpenStreetMap and said nothing about where the hills came from.
-        -->
-        <p class="fineprint">
-          Elevation from the Terrain Tiles open dataset on AWS, assembled by
-          Mapzen/Tilezen from: 3DEP, SRTM and GMTED2010 data courtesy of the
-          U.S. Geological Survey; DOC/NOAA/NESDIS/NCEI &gt; National Centers for
-          Environmental Information (ETOPO1); ArcticDEM, created from
-          DigitalGlobe, Inc. imagery and funded under NSF awards 1043681,
-          1559691 and 1542736; produced using Copernicus data and information
-          funded by the European Union (EU-DEM); Copyright 2011 Crown copyright
-          (c) Land Information New Zealand and the New Zealand Government;
-          © Environment Agency copyright and/or database right 2015, all rights
-          reserved; © offene Daten Österreichs – Digitales Geländemodell (DGM)
-          Österreich; © Kartverket; contains information licensed under the Open
-          Government Licence – Canada; Source: INEGI, Continental relief, 2016;
-          © Commonwealth of Australia (Geoscience Australia) 2017.
-        </p>
-      </div>
-    </div>
-
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/game/main.ts"></script>
   </body>
 </html>

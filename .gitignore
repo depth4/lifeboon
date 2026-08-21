@@ -1,11 +1,13 @@
 node_modules/
 dist/
-.tmp/
 dist-ssr/
+.tmp/
 *.local
 .DS_Store
 .vite/
 *.log
-review/CORE-CODE.md
-review/lifeboon-source.zip
-review/DIGEST.md
+
+# Generated review packages from the previous project.
+attic/review/CORE-CODE.md
+attic/review/lifeboon-source.zip
+attic/review/DIGEST.md
