@@ -3,8 +3,14 @@
  *
  *   node review/bundle.mjs
  *
- * Writes review/CORE-CODE.md (the architecture-critical source, concatenated
- * for models that take one big file) and review/lifeboon-source.zip (the lot).
+ * Writes review/CORE-CODE.md (the architecture-critical source), review/DIGEST.md
+ * (every source file and document, for a model that will take the whole thing)
+ * and review/lifeboon-source.zip.
+ *
+ * DIGEST.md exists because a chat model cannot clone a repository and a bare
+ * GitHub link gets it the README and a top-level file list. Third-party
+ * services do this (gitingest and the like); doing it here means the owner
+ * does not have to hand their repository to one.
  * Both are generated and git-ignored — the repository is public, so anything
  * that can clone should clone instead. BRIEF.md and ASK.md are written by hand
  * and are the part worth keeping.
@@ -47,8 +53,28 @@ const toc = sources.map(([f, s]) => `- \`${f}\` (${s.split('\n').length - 1} lin
 const body = sources.map(([f, s]) => `\n## \`${f}\`\n\n\`\`\`typescript\n${s}\`\`\`\n`).join('');
 writeFileSync('review/CORE-CODE.md', head + toc + '\n---\n' + body);
 
+// Everything, for a model with room for it. Ordered so the argument arrives
+// before the evidence: the framing, then the state, then the code.
+const all = execFileSync('git', ['ls-files', 'src', 'tests', 'docs', 'review', 'CLAUDE.md', 'AGENTS.md'], { encoding: 'utf8' })
+  .split('\n')
+  .filter((f) => /\.(ts|md)$/.test(f) && f !== 'review/CORE-CODE.md' && f !== 'review/DIGEST.md');
+const order = (f) => (f === 'review/BRIEF.md' ? 0 : f.startsWith('docs/') ? 1 : f.endsWith('.md') ? 2 : 3);
+all.sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+
+const lang = (f) => (f.endsWith('.ts') ? 'typescript' : 'markdown');
+writeFileSync('review/DIGEST.md',
+  `# Lifeboon — the whole project in one file\n\n`
+  + `Every TypeScript source, test and document. ${all.length} files.\n`
+  + `Repository: https://github.com/depth4/lifeboon (branch\n`
+  + `\`claude/world-map-life-simulator-wthhom\` — there is no \`main\`).\n\n`
+  + `Read \`review/BRIEF.md\` first — it is the first section below and it says\n`
+  + `what the review is for.\n\n## Contents\n\n`
+  + all.map((f) => `- \`${f}\`\n`).join('')
+  + '\n---\n'
+  + all.map((f) => `\n## \`${f}\`\n\n\`\`\`${lang(f)}\n${readFileSync(f, 'utf8')}\`\`\`\n`).join(''));
+
 execFileSync('zip', ['-q', '-r', 'review/lifeboon-source.zip',
   'src', 'tests', 'docs', 'CLAUDE.md', 'package.json', 'tsconfig.json',
   'index.html', 'vite.config.ts']);
 
-console.log('review/CORE-CODE.md and review/lifeboon-source.zip rebuilt');
+console.log('rebuilt: CORE-CODE.md, DIGEST.md, lifeboon-source.zip');

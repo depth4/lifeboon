@@ -113,7 +113,31 @@ and stop. The model has no concept of a `Place` — an area with entrances from
 network nodes, filled with parked cars — so those roads lead nowhere and the
 city reads as empty.
 
-### 4.6 No traffic worth the name
+### 4.6 Boolean geometry, hand-rolled four times
+
+Found by an outside reviewer reading the source, and it is sharper than
+anything in this file was: polygon boolean operations were **rejected** as a
+technique (see §6), and then reimplemented four times, in four representations
+that cannot be reconciled with one another.
+
+| Where | Representation | Resolution |
+|---|---|---|
+| `world/junctions.ts` | Constructive union of two street bands: approach bearings, meet points, outward fillets | exact, analytic |
+| `render/claims.ts` | Ownership raster, `Int32Array` of way indices | `max(0.5, radius/3000)` = **0.5 m** at a 1500 m radius |
+| `render/streetmask.ts` | Paved-area raster, `Uint8Array` | `max(1, radius/500)` = **3 m** at the same radius |
+| `render/roads.ts` | Per-segment boolean arrays: `combine`, `invert`, `pavementBands`, the per-band `yielded` test | one flag per segment of one way |
+
+All four answer versions of the same question — *which square metre is covered
+by what* — and they answer it differently. The two rasters differ by a factor
+of six in cell size alone. Every "the pavement is doubled here and missing
+there" bug lives in the gaps between these four.
+
+This reframes §4.3. The renderer reading OSM is the cause; **this** is the
+shape the damage took. And it puts the rejection of a real boolean library back
+on the table: refusing the technique did not avoid the complexity, it scattered
+it.
+
+### 4.7 No traffic worth the name
 
 Cars follow a nav graph, not lanes. No signals, no priorities, no give-way, no
 queueing. The lane and turn model exists to make this possible; none of it is
