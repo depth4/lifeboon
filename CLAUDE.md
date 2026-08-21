@@ -239,3 +239,6 @@ ground standing in a road moves, something changed that should not have.
 | `docs/ROAD-NETWORK.md` | Why roads became a network, the model, and the order to migrate onto it |
 | `docs/DECISIONS.md` | What was tried, what worked, what is still open |
 | `docs/DATA-AND-RIGHTS.md` | Licensing analysis for map data and architecture |
+| `AGENTS.md` | The same project, for agents that are not Claude Code — they run on the user's own machine, so Overpass works and the GPU is real |
+| `review/BRIEF.md` | The project framed for an outside reviewer: what is broken, with numbers, and the questions worth asking |
+| `review/PANEL.md` | How several models work on this at once: one writer, several advisors, and measurements settle it |
