@@ -229,9 +229,13 @@ ground standing in a road moves, something changed that should not have.
 | `src/render/areafield.ts` | Land cover, as paint the ground mesh samples |
 | `src/render/streetmask.ts` | Where paving really went, so the ground can be cut away under it |
 | `src/world/` | World model types, road profiles, street cross-sections, junctions |
+| `src/world/network.ts` | The road network: nodes, edges, streets, lanes, turns. The start of the architecture everything else should move onto |
+| `src/render/claims.ts` | Which way owns each square metre of ground, so two ways stop building over each other |
 | `src/terrain/` | Heightfield, elevation tiles, waterway carving |
 | `src/sim/` | Nav graph, population, vehicle physics, driver, road index |
 | `src/render/` | Scene, camera, ground, roads, buildings, people, car |
-| `docs/GROUND-REWRITE.md` | **Read this first.** Why the ground is one surface, how the street cuts it, the measurements, and what is still wrong (crossings) |
+| `docs/STATE.md` | **Read this first.** Where the project stands in full: what is proven, what is broken with numbers, what a rewrite should keep and what it should burn |
+| `docs/GROUND-REWRITE.md` | Why the ground is one surface, how the street cuts it, the measurements, and what is still wrong (crossings) |
+| `docs/ROAD-NETWORK.md` | Why roads became a network, the model, and the order to migrate onto it |
 | `docs/DECISIONS.md` | What was tried, what worked, what is still open |
 | `docs/DATA-AND-RIGHTS.md` | Licensing analysis for map data and architecture |
